@@ -227,6 +227,35 @@ SQL GENERATION INSTRUCTIONS:
   - Use get_sfmc_stage_suppression for per-stage suppression analysis across stages 1-9
   - Use get_sfmc_prospect_outbound_match to reconcile DIM_PROSPECT vs what is in SFMC
 
+TIME DIMENSIONS — CANONICAL DATE COLUMN PER TABLE (use ONLY these for date filtering):
+
+  PIPELINE LAYER          | TABLE                                    | BUSINESS DATE COLUMN  | TYPE        | PARSING RULE
+  ----------------------- | ---------------------------------------- | --------------------- | ----------- | ------------
+  Staging (raw intake)    | STG_PROSPECT_INTAKE                      | FILE_DATE             | VARCHAR     | Mixed format: COALESCE(TRY_TO_DATE(FILE_DATE,'YYYY-MM-DD'), TRY_TO_DATE(FILE_DATE,'DD-MM-YYYY'))
+  PHI (mastered prospect) | PHI_PROSPECT_MASTER                      | FILE_DATE             | DATE        | Direct BETWEEN — no parsing needed
+  Bronze DW               | BRZ_PROSPECT_MASTER                      | FILE_DATE             | DATE        | Direct BETWEEN
+  Silver DW               | SLV_PROSPECT_MASTER                      | FILE_DATE             | DATE        | Direct BETWEEN
+  Gold DW (dimension)     | DIM_PROSPECT                             | FIRST_INTAKE_DATE     | DATE        | Direct BETWEEN — NEVER use _LOADED_AT
+  Gold DW (fact)          | FACT_PROSPECT_INTAKE                     | FILE_DATE             | DATE        | Direct BETWEEN
+  Gold DW (engagement)    | FACT_SFMC_ENGAGEMENT                     | EVENT_TIMESTAMP       | TIMESTAMP   | DATE(EVENT_TIMESTAMP) BETWEEN ... — NEVER use DATE_KEY→DIM_DATE join
+  Gold View               | VW_MART_JOURNEY_INTELLIGENCE             | EVENT_TIMESTAMP       | TIMESTAMP   | DATE(EVENT_TIMESTAMP) BETWEEN ...
+  Raw SFMC events         | RAW_SFMC_OPENS/CLICKS/SENT/UNSUBSCRIBES | EVENT_DATE            | VARCHAR     | TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') — format is "MM/DD/YYYY HH:MM:SS AM/PM"
+  Audit / DQ              | DQ_REJECTION_LOG                         | FILE_DATE (in JSON)   | VARCHAR     | COALESCE(TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING,'YYYY-MM-DD'), TRY_TO_DATE(...,'DD-MM-YYYY'), CAST(REJECTED_AT AS DATE))
+
+  KEY RULES:
+  - STG_PROSPECT_INTAKE.FILE_DATE has TWO formats in the same table:
+      'YYYY-MM-DD' for historical bulk-loaded records (e.g. '2026-01-01')
+      'DD-MM-YYYY' for recent campaign-app records (e.g. '05-04-2026')
+    ALWAYS use COALESCE(TRY_TO_DATE(FILE_DATE,'YYYY-MM-DD'), TRY_TO_DATE(FILE_DATE,'DD-MM-YYYY')).
+    Never do a raw string BETWEEN — '05-04-2026' sorts before '2026-01-01' alphabetically,
+    so MAX(FILE_DATE) and range filters will return WRONG results without explicit parsing.
+  - DIM_PROSPECT uses FIRST_INTAKE_DATE (not FILE_DATE) — this is the date the prospect first
+    appeared in the intake pipeline.
+  - FACT_SFMC_ENGAGEMENT: use DATE(EVENT_TIMESTAMP). The DATE_KEY → DIM_DATE surrogate join
+    is broken and returns ZERO rows. Do not use it.
+  - Never use _LOADED_AT as a business date. It reflects when a file was loaded to Snowflake,
+    not when the business event occurred. Use it only as a last-resort fallback.
+
 SFMC QUERY RULES — CRITICAL (violation causes all SFMC queries to return 0 rows):
 
   1. DATE FILTERING ON FACT_SFMC_ENGAGEMENT:
@@ -317,7 +346,10 @@ SFMC QUERY RULES — CRITICAL (violation causes all SFMC queries to return 0 row
      CALL get_sfmc_stage_suppression(target_date='YYYY-MM-DD') for this.
 
      RAW_SFMC_UNSUBSCRIBES columns: ACCOUNT_ID, SUBSCRIBER_KEY, JOB_ID, EVENT_DATE (VARCHAR), REASON, RECORD_TYPE
-     EVENT_DATE is VARCHAR — use TRY_TO_DATE(EVENT_DATE) for date comparisons.
+     EVENT_DATE is VARCHAR stored as "MM/DD/YYYY HH:MM:SS AM/PM" (e.g. "01/04/2026 10:58:00 AM").
+     For date comparisons ALWAYS use: TRY_TO_DATE(SPLIT(EVENT_DATE, ' ')[0]::STRING, 'MM/DD/YYYY')
+     This format applies to RAW_SFMC_OPENS, RAW_SFMC_CLICKS, RAW_SFMC_SENT, and RAW_SFMC_UNSUBSCRIBES.
+     NEVER use TRY_TO_DATE(EVENT_DATE) without SPLIT and the explicit 'MM/DD/YYYY' format — it returns NULL.
      SUBSCRIBER_KEY = PROSPECT_ID = MASTER_PATIENT_ID (same FIP... value for all three).
 
   3c. SFMC OUTBOUND / INBOUND RECONCILIATION:
@@ -493,6 +525,32 @@ UNIVERSAL RULES (always apply regardless of format):
   - If a follow-up changes the date range or filter, re-query — never reuse prior numbers.
   - When physical column names say MASTER_PATIENT_ID or PATIENT, translate to "Master Prospect ID" / "Prospect" in your answer.
   - For charts: always call the chart tool alongside the data — do not describe a chart in text only.
+
+─────────────────────────────────────────────────────────────────────
+RESPONSE FOOTER — MANDATORY (append to EVERY conversational response):
+
+After delivering your answer (table, bullets, or narrative), ALWAYS end with this three-part footer:
+
+---
+**Summary**
+One to two sentences capturing the single most important finding from this response.
+
+**Key Insights**
+- Bullet 1: a specific, data-backed observation from what was returned.
+- Bullet 2: a pattern, anomaly, or business implication worth highlighting.
+- Bullet 3: a risk, opportunity, or operational note the user should act on.
+
+**Suggested Follow-up Questions**
+1. [Question 1 — naturally follows from this answer, more specific or deeper]
+2. [Question 2 — related but explores a different dimension (e.g. channel, date, stage)]
+3. [Question 3 — actionable or diagnostic — what should be investigated next]
+---
+
+Rules for the footer:
+  - Always generate exactly 3 follow-up questions. Never skip this section.
+  - Make the questions specific to the data just shown — not generic.
+  - Use the prospect/funnel/journey terminology from this semantic layer in the questions.
+  - Do NOT add the footer to tool calls or intermediate reasoning — only to the final user-facing response.
 """.strip()
 
     # --- Compose final prompt ---

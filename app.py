@@ -23,8 +23,8 @@ import streamlit.components.v1 as components
 
 # Must be the first Streamlit command
 st.set_page_config(
-    page_title="FIPSAR Prospect Journey Intelligence",
-    page_icon="📊",
+    page_title="FIPSAR Intelligence",
+    page_icon="FIPSAR_LOGO.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -155,36 +155,42 @@ html, body, [class*="css"] {
     top: 0;
     z-index: 999;
     background-color: #f4f6fb !important;
-    padding: 10px 0 0 0;
-    box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+    padding: 12px 0 2px 0;
+    box-shadow: 0 4px 14px rgba(13,42,94,0.10);
 }
 /* Tab list pill container */
 [data-baseweb="tab-list"] {
     background: #ffffff !important;
-    border-radius: 14px !important;
-    padding: 5px !important;
-    gap: 3px !important;
-    box-shadow: 0 2px 10px rgba(13,42,94,0.10) !important;
-    border: 1px solid #e8ecf4 !important;
+    border-radius: 16px !important;
+    padding: 6px !important;
+    gap: 4px !important;
+    box-shadow: 0 4px 20px rgba(13,42,94,0.12) !important;
+    border: 1.5px solid #d4ddf0 !important;
 }
+/* Inactive tab — visible bordered pill */
 [data-baseweb="tab"] {
-    background: transparent !important;
-    border-radius: 10px !important;
-    padding: 9px 22px !important;
-    font-weight: 600 !important;
-    font-size: 0.83rem !important;
-    color: #64748b !important;
-    border: none !important;
-    transition: all 0.18s ease !important;
+    background: #f8fafd !important;
+    border-radius: 12px !important;
+    padding: 11px 28px !important;
+    font-weight: 700 !important;
+    font-size: 0.875rem !important;
+    color: #4a5878 !important;
+    border: 1.5px solid #dde6f5 !important;
+    transition: all 0.20s ease !important;
+    letter-spacing: 0.15px !important;
 }
 [data-baseweb="tab"]:hover {
-    background: #f0f4ff !important;
-    color: #1a3a6b !important;
+    background: #edf2ff !important;
+    color: #0d2a5e !important;
+    border-color: #a8bde8 !important;
+    box-shadow: 0 2px 8px rgba(13,42,94,0.10) !important;
 }
+/* Active tab — solid navy gradient */
 [aria-selected="true"][data-baseweb="tab"] {
     background: linear-gradient(135deg, #0d2a5e 0%, #1a4a9e 100%) !important;
     color: #ffffff !important;
-    box-shadow: 0 2px 8px rgba(13,42,94,0.30) !important;
+    box-shadow: 0 4px 14px rgba(13,42,94,0.38) !important;
+    border-color: transparent !important;
 }
 [data-baseweb="tab-highlight"] {
     background-color: transparent !important;
@@ -281,6 +287,29 @@ html, body, [class*="css"] {
     border-radius: 9px !important;
     border-color: #dde4f0 !important;
 }
+
+/* ── Sidebar logo image — center and remove white bg ───────────────────── */
+[data-testid="stSidebar"] [data-testid="stImage"] {
+    display: flex !important;
+    justify-content: center !important;
+    margin: 10px auto 0 !important;
+}
+[data-testid="stSidebar"] [data-testid="stImage"] img {
+    border-radius: 10px !important;
+    background: rgba(255,255,255,0.10) !important;
+    padding: 6px !important;
+}
+
+/* ── Sidebar logo column — remove padding that creates gap ─────────────── */
+[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] {
+    gap: 0 !important;
+    padding: 0 !important;
+}
+
+/* ── Remove default streamlit image border/bg ───────────────────────────── */
+[data-testid="stSidebar"] .stImage > img {
+    max-width: 80px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -372,10 +401,12 @@ if "email_test_result" not in st.session_state:
 # ===========================================================================
 
 with st.sidebar:
-    # Brand header
+    # Brand header — logo + title
+    _logo_col1, _logo_col2, _logo_col3 = st.columns([0.4, 2.2, 0.4])
+    with _logo_col2:
+        st.image("FIPSAR_LOGO.png", use_container_width=True)
     st.markdown("""
-    <div style="text-align:center;padding:12px 0 16px">
-        <div style="font-size:1.6rem;margin-bottom:4px">📊</div>
+    <div style="text-align:center;padding:6px 0 16px">
         <div style="font-size:1.1rem;font-weight:800;color:#ffffff;letter-spacing:0.4px">
             FIPSAR Intelligence
         </div>
@@ -513,9 +544,6 @@ with st.sidebar:
     st.markdown("""<div style="font-size:0.72rem;font-weight:700;color:#8fb4e8;
         text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px">
         💡 Sample Questions</div>""", unsafe_allow_html=True)
-    st.markdown("""<div style="font-size:0.71rem;color:#7fa8d8;margin-bottom:6px">
-        Sends to the 💬 Chat tab.</div>""", unsafe_allow_html=True)
-
     SAMPLE_QUESTIONS: dict[str, list[str]] = {
         "📈 Funnel & Drop Analysis": [
             "Give me a full funnel summary — leads to prospects to engagement.",
@@ -576,7 +604,10 @@ with st.sidebar:
 # ===========================================================================
 
 tab_analytics, tab_chat, tab_voice, tab_frel = st.tabs([
-    "📊  Analytics", "💬  Chat", "🎤  Voice Assistant", "📧  FREL Agent"
+    "  📊   Analytics  ",
+    "  💬   Chat  ",
+    "  🎤   Voice Assistant  ",
+    "  📧   FREL Agent  ",
 ])
 
 

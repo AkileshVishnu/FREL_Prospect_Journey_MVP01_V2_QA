@@ -19,9 +19,10 @@ Public API:
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
@@ -54,10 +55,31 @@ _checkpointer = MemorySaver()
 # Build the agent
 # ---------------------------------------------------------------------------
 
+def _state_modifier(state: dict) -> list[BaseMessage]:
+    """
+    Inject a live date header into the system prompt on every agent invocation.
+    This ensures the agent always knows today's date and never defaults to its
+    training-data cutoff when the user says 'current month' or 'today'.
+    """
+    today = date.today()
+    date_header = (
+        f"TODAY'S DATE: {today.strftime('%d %B %Y')} "
+        f"(YYYY-MM-DD: {today.isoformat()})\n"
+        f"CURRENT MONTH: {today.strftime('%B %Y')}\n"
+        f"CURRENT YEAR: {today.year}\n"
+        "IMPORTANT: When the user says 'today', 'this month', 'current month', "
+        "'this week', or 'recent' — always use the date above. "
+        "NEVER use your training-data cutoff date as 'today'.\n"
+    )
+    full_prompt = date_header + "\n" + SYSTEM_PROMPT
+    messages = state.get("messages", [])
+    return [SystemMessage(content=full_prompt)] + list(messages)
+
+
 _agent = create_react_agent(
     model=_llm,
     tools=ALL_TOOLS,
-    state_modifier=SYSTEM_PROMPT,
+    state_modifier=_state_modifier,
     checkpointer=_checkpointer,
 )
 

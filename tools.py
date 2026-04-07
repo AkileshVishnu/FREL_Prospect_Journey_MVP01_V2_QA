@@ -84,12 +84,22 @@ def get_funnel_metrics(start_date: str = "2020-01-01", end_date: str = "2099-12-
     Returns:
         Funnel stage metrics as a markdown table.
     """
+    # STG_PROSPECT_INTAKE.FILE_DATE is VARCHAR with mixed formats:
+    #   'YYYY-MM-DD' (bulk historical data) and 'DD-MM-YYYY' (recent campaign files).
+    # Must use COALESCE(TRY_TO_DATE(...,'YYYY-MM-DD'), TRY_TO_DATE(...,'DD-MM-YYYY'))
+    # for correct date range filtering. Plain BETWEEN on the raw varchar fails for DD-MM-YYYY
+    # records because alphabetical sort puts '05-04-2026' before '2026-...' strings.
+    stg_date_filter = (
+        f"COALESCE(TRY_TO_DATE(FILE_DATE::STRING,'YYYY-MM-DD'),"
+        f"TRY_TO_DATE(FILE_DATE::STRING,'DD-MM-YYYY'))"
+        f" BETWEEN '{start_date}' AND '{end_date}'"
+    )
     sql = textwrap.dedent(f"""
         WITH
         leads AS (
             SELECT COUNT(*) AS lead_count
             FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE
-            WHERE FILE_DATE BETWEEN '{start_date}' AND '{end_date}'
+            WHERE {stg_date_filter}
         ),
         invalid_leads AS (
             -- Compute arithmetically: leads that did NOT make it to PHI_PROSPECT_MASTER.
@@ -97,7 +107,7 @@ def get_funnel_metrics(start_date: str = "2020-01-01", end_date: str = "2099-12-
             -- may differ from FILE_DATE, so arithmetic is the reliable source of truth.
             SELECT
                 (SELECT COUNT(*) FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE
-                 WHERE FILE_DATE BETWEEN '{start_date}' AND '{end_date}')
+                 WHERE {stg_date_filter})
                 -
                 (SELECT COUNT(*) FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER
                  WHERE FILE_DATE BETWEEN '{start_date}' AND '{end_date}')
@@ -234,7 +244,8 @@ def get_rejection_analysis(
     sql = textwrap.dedent(f"""
         SELECT
             COALESCE(
-                TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING),
+                TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING, 'YYYY-MM-DD'),
+                TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING, 'DD-MM-YYYY'),
                 CAST(REJECTED_AT AS DATE)
             )                                           AS lead_file_date,
             TABLE_NAME,
@@ -246,11 +257,16 @@ def get_rejection_analysis(
         FROM FIPSAR_AUDIT.PIPELINE_AUDIT.DQ_REJECTION_LOG
         WHERE
             (
-                TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING)
-                    BETWEEN '{start_date}' AND '{end_date}'
+                COALESCE(
+                    TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING, 'YYYY-MM-DD'),
+                    TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING, 'DD-MM-YYYY')
+                ) BETWEEN '{start_date}' AND '{end_date}'
             )
             OR (
-                TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING) IS NULL
+                COALESCE(
+                    TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING, 'YYYY-MM-DD'),
+                    TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING, 'DD-MM-YYYY')
+                ) IS NULL
                 AND CAST(REJECTED_AT AS DATE) BETWEEN '{start_date}' AND '{end_date}'
             )
           {reason_filter}
@@ -434,11 +450,13 @@ def get_drop_analysis(target_date: str) -> str:
     """
     sql = textwrap.dedent(f"""
         -- Intake vs mastering on target date
+        -- FILE_DATE is VARCHAR with mixed formats (YYYY-MM-DD and DD-MM-YYYY) — must parse both
         SELECT 'Lead Intake' AS signal,
                COUNT(*) AS count,
                '{target_date}' AS date
         FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE
-        WHERE FILE_DATE = '{target_date}'
+        WHERE COALESCE(TRY_TO_DATE(FILE_DATE::STRING,'YYYY-MM-DD'),
+                       TRY_TO_DATE(FILE_DATE::STRING,'DD-MM-YYYY')) = '{target_date}'
 
         UNION ALL
 

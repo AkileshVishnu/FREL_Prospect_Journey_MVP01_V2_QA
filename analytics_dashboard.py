@@ -65,12 +65,20 @@ def _scalar(df: pd.DataFrame, default: int = 0) -> int:
 
 
 def _date_flt(col: str, s: date, e: date) -> str:
-    return f"TRY_TO_DATE({col}::STRING) BETWEEN '{s}' AND '{e}'"
+    # FILE_DATE is VARCHAR with mixed formats: 'YYYY-MM-DD' and 'DD-MM-YYYY'.
+    # COALESCE across both explicit formats so all rows are correctly parsed.
+    parsed = (
+        f"COALESCE("
+        f"TRY_TO_DATE({col}::STRING, 'YYYY-MM-DD'), "
+        f"TRY_TO_DATE({col}::STRING, 'DD-MM-YYYY')"
+        f")"
+    )
+    return f"{parsed} BETWEEN '{s}' AND '{e}'"
 
 
 def _chan_where(channel: str) -> str:
     return "" if (not channel or channel == "All") else \
-           f" AND UPPER(INTAKE_CHANNEL) = UPPER('{channel}')"
+           f" AND UPPER(CHANNEL) = UPPER('{channel}')"
 
 
 def _journey_code(journey: str) -> str:
@@ -90,7 +98,7 @@ def _journey_where(journey: str, col: str = "JOURNEY_CODE") -> str:
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_filter_options() -> dict[str, list]:
     channels = _run("""
-        SELECT DISTINCT COALESCE(UPPER(INTAKE_CHANNEL), 'UNKNOWN') AS CH
+        SELECT DISTINCT COALESCE(UPPER(CHANNEL), 'UNKNOWN') AS CH
         FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE ORDER BY 1
     """)
     ch_list = ["All"] + (channels.iloc[:, 0].tolist() if not channels.empty else [])
@@ -104,49 +112,104 @@ def _fetch_funnel_kpis(s: date, e: date, channel: str) -> dict[str, int]:
     ch = _chan_where(channel)
     leads     = _scalar(_run(f"SELECT COUNT(*) FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE WHERE {_date_flt('FILE_DATE',s,e)}{ch}"))
     prospects = _scalar(_run(f"SELECT COUNT(*) FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER  WHERE {_date_flt('FILE_DATE',s,e)}{ch}"))
-    return {"leads": leads, "prospects": prospects, "invalid": max(leads - prospects, 0)}
+
+    # Invalid leads: query DQ_REJECTION_LOG directly for intake-stage rejections.
+    # Arithmetic (leads - prospects) diverges when FILE_DATE in PHI_PROSPECT_MASTER
+    # differs from STG for reprocessed records, causing impossible negative sub-period counts.
+    invalid = _scalar(_run(f"""
+        SELECT COUNT(*)
+        FROM FIPSAR_AUDIT.PIPELINE_AUDIT.DQ_REJECTION_LOG
+        WHERE UPPER(REJECTION_REASON) IN (
+            'NULL_EMAIL','NULL_FIRST_NAME','NULL_LAST_NAME',
+            'NULL_PHONE_NUMBER','INVALID_FILE_DATE','NO_CONSENT'
+        )
+        AND (
+            TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING)
+                BETWEEN '{s}' AND '{e}'
+            OR (
+                TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING) IS NULL
+                AND CAST(REJECTED_AT AS DATE) BETWEEN '{s}' AND '{e}'
+            )
+        )
+        {ch.replace('AND UPPER(CHANNEL)', 'AND UPPER(TRY_PARSE_JSON(REJECTED_RECORD):CHANNEL::STRING)') if ch else ''}
+    """))
+
+    return {"leads": leads, "prospects": prospects, "invalid": invalid}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_email_kpis(s: date, e: date, journey: str) -> dict[str, int]:
     jw = _journey_where(journey)
 
-    # Actual sent — gold table first, raw fallback
-    actual = _scalar(_run(f"""
+    # Emails Sent — gold table first, raw fallback
+    sent = _scalar(_run(f"""
         SELECT COUNT(*) FROM FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT
         WHERE UPPER(EVENT_TYPE) = 'SENT'
           AND TRY_TO_DATE(EVENT_TIMESTAMP::STRING) BETWEEN '{s}' AND '{e}'
           {jw}
     """))
-    if actual == 0:
-        actual = _scalar(_run(f"""
-            SELECT COUNT(*) FROM FIPSAR_SFMC_EVENTS.RAW.RAW_SFMC_SENT
-            WHERE TRY_TO_DATE(EVENT_DATE::STRING) BETWEEN '{s}' AND '{e}'
+    if sent == 0:
+        sent = _scalar(_run(f"""
+            SELECT COUNT(*) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT
+            WHERE (
+                TRY_TO_DATE(SPLIT(EVENT_DATE, ' ')[0]::STRING, 'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
+                OR (
+                    TRY_TO_DATE(SPLIT(EVENT_DATE, ' ')[0]::STRING, 'MM/DD/YYYY') IS NULL
+                    AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'
+                )
+            )
         """))
 
-    # Suppressed — dual date filter
-    suppressed = _scalar(_run(f"""
-        SELECT COUNT(*) FROM FIPSAR_AUDIT.DQ.DQ_REJECTION_LOG
-        WHERE UPPER(REJECTION_REASON) = 'SUPPRESSED'
-          AND (
-              TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING) BETWEEN '{s}' AND '{e}'
-              OR CAST(REJECTED_AT AS DATE) BETWEEN '{s}' AND '{e}'
-          )
-    """))
+    # EVENT_DATE is VARCHAR stored as "MM/DD/YYYY HH:MM:SS AM/PM" (e.g. "01/04/2026 10:58:00 AM").
+    # SPLIT on space gives the date part "MM/DD/YYYY"; TRY_TO_DATE with explicit format.
+    # If the parsed date filter returns 0 (bulk-load timestamp outside range),
+    # fall back to full-table COUNT — opens/clicks/unsubscribes are cumulative program totals.
+    def _event_date_filter(col_date: str = "EVENT_DATE") -> str:
+        return f"""(
+            TRY_TO_DATE(SPLIT({col_date}, ' ')[0]::STRING, 'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
+            OR (
+                TRY_TO_DATE(SPLIT({col_date}, ' ')[0]::STRING, 'MM/DD/YYYY') IS NULL
+                AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'
+            )
+        )"""
 
-    # Fatal — same dual-date strategy
-    fatal = _scalar(_run(f"""
-        SELECT COUNT(*) FROM FIPSAR_AUDIT.DQ.DQ_REJECTION_LOG
-        WHERE UPPER(REJECTION_REASON) = 'FATAL_ERROR'
-          AND (
-              TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING) BETWEEN '{s}' AND '{e}'
-              OR CAST(REJECTED_AT AS DATE) BETWEEN '{s}' AND '{e}'
-          )
+    opened = _scalar(_run(f"""
+        SELECT COUNT(*)
+        FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS
+        WHERE {_event_date_filter()}
     """))
+    if opened == 0:
+        opened = _scalar(_run(
+            "SELECT COUNT(*) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS"
+        ))
 
-    expected = actual + suppressed + fatal
-    return {"expected": expected, "actual": actual,
-            "suppressed": suppressed, "fatal": fatal, "unsent": suppressed + fatal}
+    clicked = _scalar(_run(f"""
+        SELECT COUNT(*)
+        FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS
+        WHERE {_event_date_filter()}
+    """))
+    if clicked == 0:
+        clicked = _scalar(_run(
+            "SELECT COUNT(*) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS"
+        ))
+
+    # Unsubscribes: DISTINCT SUBSCRIBER_KEY scoped to date range
+    unsubscribed = _scalar(_run(f"""
+        SELECT COUNT(DISTINCT SUBSCRIBER_KEY)
+        FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_UNSUBSCRIBES
+        WHERE {_event_date_filter()}
+    """))
+    if unsubscribed == 0:
+        unsubscribed = _scalar(_run(
+            "SELECT COUNT(DISTINCT SUBSCRIBER_KEY) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_UNSUBSCRIBES"
+        ))
+
+    return {
+        "sent": sent,
+        "opened": opened,
+        "clicked": clicked,
+        "unsubscribed": unsubscribed,
+    }
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -173,16 +236,22 @@ def _fetch_conversion_segments(s: date, e: date, journey: str) -> dict[str, int]
     if df.empty or _df_sum(df) == 0:
         df = _run(f"""
             WITH sent AS (
-                SELECT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW.RAW_SFMC_SENT
-                WHERE TRY_TO_DATE(EVENT_DATE::STRING) BETWEEN '{s}' AND '{e}'
+                SELECT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT
+                WHERE (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
+                       OR (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') IS NULL
+                           AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'))
             ),
             opens AS (
-                SELECT DISTINCT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW.RAW_SFMC_OPENS
-                WHERE TRY_TO_DATE(EVENT_DATE::STRING) BETWEEN '{s}' AND '{e}'
+                SELECT DISTINCT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS
+                WHERE (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
+                       OR (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') IS NULL
+                           AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'))
             ),
             clicks AS (
-                SELECT DISTINCT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW.RAW_SFMC_CLICKS
-                WHERE TRY_TO_DATE(EVENT_DATE::STRING) BETWEEN '{s}' AND '{e}'
+                SELECT DISTINCT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS
+                WHERE (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
+                       OR (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') IS NULL
+                           AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'))
             )
             SELECT
                 COUNT(DISTINCT c.SUBSCRIBER_KEY)                                  AS HIGH_COUNT,
@@ -223,10 +292,8 @@ def _fetch_prospect_segments(s: date, e: date, journey: str) -> dict[str, int]:
                 COUNT(DISTINCT CASE WHEN UPPER(e.EVENT_TYPE) IN ('BOUNCE','UNSUBSCRIBE')
                                     THEN e.JOB_ID END)                            AS neg
             FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER p
-            LEFT JOIN FIPSAR_PHI_HUB.PHI_CORE.PATIENT_IDENTITY_XREF x
-                ON p.MASTER_PATIENT_ID = x.MASTER_PATIENT_ID
             LEFT JOIN FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT e
-                ON x.SUBSCRIBER_KEY = e.SUBSCRIBER_KEY
+                ON e.SUBSCRIBER_KEY = p.MASTER_PATIENT_ID
                AND TRY_TO_DATE(e.EVENT_TIMESTAMP::STRING) BETWEEN '{s}' AND '{e}'
                {jw_eng}
             WHERE {_date_flt('p.FILE_DATE', s, e)}
@@ -341,10 +408,10 @@ def _chart_lead_funnel(leads: int, prospects: int, invalid: int) -> go.Figure:
     return fig
 
 
-def _chart_email_comparison(expected: int, actual: int, suppressed: int, fatal: int) -> go.Figure:
-    labels = ["Expected\nSent", "Actual\nSent", "Suppressed", "Fatal\nIssues"]
-    values = [expected, actual, suppressed, fatal]
-    colors = [_SKY, _GREEN, _AMBER, _RED]
+def _chart_email_comparison(sent: int, opened: int, clicked: int, unsubscribed: int) -> go.Figure:
+    labels = ["Sent", "Opened", "Clicked", "Unsubscribed"]
+    values = [sent, opened, clicked, unsubscribed]
+    colors = [_GREEN, _CYAN, _PURPLE, _AMBER]
     fig = go.Figure(go.Bar(
         x=labels, y=values,
         marker=dict(
@@ -359,7 +426,7 @@ def _chart_email_comparison(expected: int, actual: int, suppressed: int, fatal: 
     fig.update_layout(
         **_BASE_LAYOUT,
         title=dict(
-            text="<b>Email Sent Comparison</b>",
+            text="<b>Email Delivery & Engagement Overview</b>",
             font=dict(size=13, color=_NAVY, family="Inter, Arial, sans-serif"),
             x=0.5, xanchor="center",
         ),
@@ -495,40 +562,61 @@ def _kpi_card(label: str, value: int, color: str, icon: str = "", sub: str = "")
     </div>"""
 
 
-def _unsent_card(suppressed: int, fatal: int) -> str:
+def _opens_clicks_card(opened: int, clicked: int) -> str:
     return f"""
     <div style="background:#ffffff;border-radius:14px;padding:18px 16px 16px;
                 box-shadow:0 2px 16px rgba(13,42,94,0.09);text-align:center;
-                border-top:4px solid {_AMBER};min-height:118px;
+                border-top:4px solid {_CYAN};min-height:118px;
                 position:relative;overflow:hidden">
         <div style="position:absolute;top:0;left:0;right:0;bottom:0;
-                    background:linear-gradient(135deg,{_AMBER}08 0%,transparent 60%);
+                    background:linear-gradient(135deg,{_CYAN}08 0%,transparent 60%);
                     pointer-events:none"></div>
-        <div style="font-size:1.4rem;margin-bottom:6px;opacity:0.85">⚠️</div>
+        <div style="font-size:1.4rem;margin-bottom:6px;opacity:0.85">📖</div>
         <div style="font-size:10.5px;color:{_SLATE};font-weight:700;
                     text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">
-            UnSent Email
+            Email Engagement
         </div>
         <div style="display:flex;justify-content:center;gap:22px;align-items:flex-start">
             <div>
                 <div style="font-size:9.5px;color:{_SLATE};font-weight:600;
                             text-transform:uppercase;letter-spacing:0.7px;margin-bottom:4px">
-                    Suppressed
+                    Opened
                 </div>
-                <div style="font-size:28px;font-weight:800;color:{_AMBER};line-height:1">
-                    {suppressed:,}
+                <div style="font-size:28px;font-weight:800;color:{_CYAN};line-height:1">
+                    {opened:,}
                 </div>
             </div>
             <div style="width:1px;background:#e2e8f0;height:44px;margin-top:2px"></div>
             <div>
                 <div style="font-size:9.5px;color:{_SLATE};font-weight:600;
                             text-transform:uppercase;letter-spacing:0.7px;margin-bottom:4px">
-                    Fatal Issues
+                    Clicked
                 </div>
-                <div style="font-size:28px;font-weight:800;color:{_RED};line-height:1">
-                    {fatal:,}
+                <div style="font-size:28px;font-weight:800;color:{_PURPLE};line-height:1">
+                    {clicked:,}
                 </div>
             </div>
+        </div>
+    </div>"""
+
+
+def _unsubscribe_card(unsubscribed: int) -> str:
+    return f"""
+    <div style="background:#ffffff;border-radius:14px;padding:20px 16px 16px;
+                box-shadow:0 2px 16px rgba(13,42,94,0.09);text-align:center;
+                border-top:4px solid {_AMBER};min-height:118px;
+                position:relative;overflow:hidden">
+        <div style="position:absolute;top:0;left:0;right:0;bottom:0;
+                    background:linear-gradient(135deg,{_AMBER}08 0%,transparent 60%);
+                    pointer-events:none"></div>
+        <div style="font-size:1.6rem;margin-bottom:6px;opacity:0.85">🚫</div>
+        <div style="font-size:10.5px;color:{_SLATE};font-weight:700;
+                    text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">
+            Unsubscribed
+        </div>
+        <div style="font-size:38px;font-weight:800;color:{_AMBER};line-height:1.0;
+                    font-family:'Inter','Segoe UI',sans-serif">
+            {unsubscribed:,}
         </div>
     </div>"""
 
@@ -566,25 +654,27 @@ def render_analytics_dashboard() -> None:
 
     # ══ LEFT: filter panel ════════════════════════════════════════════════
     with left:
-        # Filter panel header card
+        # Filter panel — logo + brand card
         st.markdown(
             f"""<div style="background:linear-gradient(160deg,{_NAVY} 0%,{_BLUE} 100%);
-            border-radius:14px;padding:22px 18px 20px;
+            border-radius:14px;padding:20px 18px 18px;
             box-shadow:0 4px 20px rgba(13,42,94,0.22);margin-bottom:16px">
-            <div style="text-align:center;margin-bottom:18px">
-                <div style="font-size:1.8rem;margin-bottom:4px">📊</div>
-                <div style="font-size:1rem;font-weight:800;color:#ffffff;letter-spacing:0.4px">
-                    FIPSAR
-                </div>
-                <div style="font-size:0.71rem;color:#a0c4ff;margin-top:3px;letter-spacing:0.3px">
-                    Marketing Leads Observability
+            <div style="display:flex;align-items:center;gap:11px;margin-bottom:14px">
+                <img src="app/static/FIPSAR_LOGO.png"
+                     onerror="this.style.display='none'"
+                     style="width:38px;height:38px;object-fit:contain;border-radius:8px;
+                            background:rgba(255,255,255,0.12);padding:4px;flex-shrink:0" />
+                <div>
+                    <div style="font-size:0.92rem;font-weight:800;color:#ffffff;
+                                letter-spacing:0.3px;line-height:1.2">FIPSAR</div>
+                    <div style="font-size:0.65rem;color:#a0c4ff;margin-top:1px;
+                                letter-spacing:0.2px">Marketing Leads Observability</div>
                 </div>
             </div>
-            <div style="height:1px;background:rgba(255,255,255,0.18);margin-bottom:18px"></div>
-            <div style="font-size:9.5px;font-weight:700;color:#a0c4ff;
-                        text-transform:uppercase;letter-spacing:1.2px;
-                        display:flex;align-items:center;gap:6px">
-                <span>🔍</span> Filters
+            <div style="height:1px;background:rgba(255,255,255,0.16);margin-bottom:14px"></div>
+            <div style="font-size:9px;font-weight:700;color:#a0c4ff;
+                        text-transform:uppercase;letter-spacing:1.4px">
+                &#9639; Filters
             </div>
             </div>""",
             unsafe_allow_html=True,
@@ -646,22 +736,36 @@ def render_analytics_dashboard() -> None:
         jcode = _journey_code(journey)
         st.markdown(
             f"""<div style="background:linear-gradient(135deg,#0d2a5e 0%,#1a4a9e 100%);
-            border-radius:16px;padding:20px 26px;margin-bottom:18px;
+            border-radius:16px;padding:20px 28px;margin-bottom:18px;
             box-shadow:0 4px 20px rgba(13,42,94,0.20)">
             <div style="display:flex;align-items:center;justify-content:space-between">
                 <div>
                     <div style="font-size:1.2rem;font-weight:800;color:#ffffff;letter-spacing:0.3px">
                         Analytics Dashboard
                     </div>
-                    <div style="font-size:0.78rem;color:#a8c4f0;margin-top:4px;display:flex;gap:14px;flex-wrap:wrap">
-                        <span>📅 {start_date.strftime('%b %d, %Y')} — {end_date.strftime('%b %d, %Y')}</span>
-                        <span>·</span>
-                        <span>📡 Channel: <b style="color:#dbeafe">{channel}</b></span>
-                        <span>·</span>
-                        <span>🗺 Journey: <b style="color:#dbeafe">{"All" if not jcode else jcode}</b></span>
+                    <div style="font-size:0.78rem;color:#a8c4f0;margin-top:5px;
+                                display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+                        <span style="display:flex;align-items:center;gap:5px">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                 stroke="#a8c4f0" stroke-width="2" stroke-linecap="round">
+                                <rect x="3" y="4" width="18" height="18" rx="2"/>
+                                <line x1="16" y1="2" x2="16" y2="6"/>
+                                <line x1="8" y1="2" x2="8" y2="6"/>
+                                <line x1="3" y1="10" x2="21" y2="10"/>
+                            </svg>
+                            {start_date.strftime('%b %d, %Y')} — {end_date.strftime('%b %d, %Y')}
+                        </span>
+                        <span style="color:#5c7cb0">·</span>
+                        <span>Channel: <b style="color:#dbeafe">{channel}</b></span>
+                        <span style="color:#5c7cb0">·</span>
+                        <span>Journey: <b style="color:#dbeafe">{"All" if not jcode else jcode}</b></span>
                     </div>
                 </div>
-                <div style="font-size:2.5rem;opacity:0.6">📊</div>
+                <img src="app/static/FIPSAR_LOGO.png"
+                     onerror="this.style.display='none'"
+                     style="width:44px;height:44px;object-fit:contain;
+                            border-radius:10px;background:rgba(255,255,255,0.12);
+                            padding:5px;opacity:0.9" />
             </div></div>""",
             unsafe_allow_html=True,
         )
@@ -715,16 +819,13 @@ def render_analytics_dashboard() -> None:
         e1, e2, e3 = st.columns(3, gap="small")
         with e1:
             st.markdown(
-                _kpi_card("Expected Sent", email["expected"], _BLUE, icon="📤"),
+                _kpi_card("Emails Sent", email["sent"], _GREEN, icon="📨"),
                 unsafe_allow_html=True,
             )
         with e2:
-            st.markdown(
-                _kpi_card("Actual Sent", email["actual"], _GREEN, icon="📨"),
-                unsafe_allow_html=True,
-            )
+            st.markdown(_opens_clicks_card(email["opened"], email["clicked"]), unsafe_allow_html=True)
         with e3:
-            st.markdown(_unsent_card(email["suppressed"], email["fatal"]), unsafe_allow_html=True)
+            st.markdown(_unsubscribe_card(email["unsubscribed"]), unsafe_allow_html=True)
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -743,8 +844,8 @@ def render_analytics_dashboard() -> None:
         with c2:
             st.plotly_chart(
                 _chart_email_comparison(
-                    email["expected"], email["actual"],
-                    email["suppressed"], email["fatal"],
+                    email["sent"], email["opened"], email["clicked"],
+                    email["unsubscribed"],
                 ),
                 use_container_width=True, config={"displayModeBar": False},
             )

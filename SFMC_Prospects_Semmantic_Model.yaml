@@ -52,6 +52,7 @@ semantic_layer:
         lifecycle_stage: "Rejected during validation"
         examples:
           - "NULL_EMAIL"
+          - "NULL_PHONE_NUMBER"
           - "NO_CONSENT"
       prospect:
         definition: >
@@ -137,6 +138,15 @@ semantic_layer:
                 grain: "One row per incoming lead submission"
                 business_role: "Raw lead landing table"
                 lifecycle_label: "Lead"
+                business_date_column: "FILE_DATE"
+                date_type: "VARCHAR — MIXED FORMATS"
+                date_parsing_note: >
+                  FILE_DATE contains two formats in the same table:
+                  'YYYY-MM-DD' for historical bulk-loaded records and 'DD-MM-YYYY' for recent campaign-app records.
+                  ALWAYS use COALESCE(TRY_TO_DATE(FILE_DATE,'YYYY-MM-DD'), TRY_TO_DATE(FILE_DATE,'DD-MM-YYYY')) for any filter or sort.
+                  NEVER do a raw string BETWEEN on FILE_DATE — alphabetical sort puts '05-04-2026' before '2026-01-01',
+                  causing wrong MAX(), wrong range counts, and the agent to hallucinate 'no data today'.
+                  NEVER use _LOADED_AT as the business date — it is the Snowflake ingest timestamp, not the event date.
                 key_columns:
                   - "FIRST_NAME"
                   - "LAST_NAME"
@@ -159,6 +169,9 @@ semantic_layer:
                 grain: "One row per valid mastered Prospect intake record"
                 business_role: "Mastered Prospect core table"
                 lifecycle_label: "Prospect"
+                business_date_column: "FILE_DATE"
+                date_type: "DATE"
+                date_parsing_note: "FILE_DATE is a native DATE column — direct BETWEEN filter works correctly."
                 key_columns:
                   - "RECORD_ID"
                   - "MASTER_PATIENT_ID"
@@ -173,7 +186,7 @@ semantic_layer:
                   - "IS_ACTIVE"
               FIPSAR_PHI_HUB.PHI_CORE.PATIENT_IDENTITY_XREF:
                 grain: "One row per identity mapping"
-                business_role: "Subscriber / identity to master prospect bridge"
+                business_role: "master prospect bridge"
                 lifecycle_label: "Identity bridge"
                 key_columns:
                   - "IDENTITY_KEY"
@@ -190,11 +203,17 @@ semantic_layer:
               FIPSAR_DW.BRONZE.BRZ_PROSPECT_MASTER:
                 grain: "Raw warehouse copy of mastered Prospect rows"
                 business_role: "Warehouse bronze copy"
+                business_date_column: "FILE_DATE"
+                date_type: "DATE"
+                date_parsing_note: "FILE_DATE is a native DATE column — direct BETWEEN filter works correctly."
           SILVER:
             tables:
               FIPSAR_DW.SILVER.SLV_PROSPECT_MASTER:
                 grain: "Historized prospect row version"
-                business_role: "Standardized and SCD-tracked Prospect layer"
+                business_role: "Deduplication and SCD2-History tracked Prospect layer"
+                business_date_column: "FILE_DATE"
+                date_type: "DATE"
+                date_parsing_note: "FILE_DATE is a native DATE column — direct BETWEEN filter works correctly."
                 important_columns:
                   - "SLV_KEY"
                   - "MASTER_PATIENT_ID"
@@ -208,6 +227,11 @@ semantic_layer:
               FIPSAR_DW.GOLD.DIM_PROSPECT:
                 grain: "One row per valid Prospect"
                 business_role: "Core prospect dimension"
+                business_date_column: "FIRST_INTAKE_DATE"
+                date_type: "DATE"
+                date_parsing_note: >
+                  Use FIRST_INTAKE_DATE for 'when was this prospect first seen'.
+                  LAST_INTAKE_DATE for most recent. NEVER use _LOADED_AT.
                 important_columns:
                   - "PROSPECT_KEY"
                   - "MASTER_PATIENT_ID"
@@ -275,6 +299,9 @@ semantic_layer:
               FIPSAR_DW.GOLD.FACT_PROSPECT_INTAKE:
                 grain: "One row per valid prospect intake event"
                 business_role: "Prospect intake fact"
+                business_date_column: "FILE_DATE"
+                date_type: "DATE"
+                date_parsing_note: "FILE_DATE is a native DATE column — direct BETWEEN filter works correctly. Do NOT join DATE_KEY→DIM_DATE for date filtering."
                 important_columns:
                   - "INTAKE_KEY"
                   - "RECORD_ID"
@@ -290,6 +317,12 @@ semantic_layer:
               FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT:
                 grain: "One row per SFMC engagement event"
                 business_role: "Production engagement fact"
+                business_date_column: "EVENT_TIMESTAMP"
+                date_type: "TIMESTAMP"
+                date_parsing_note: >
+                  ALWAYS filter with DATE(EVENT_TIMESTAMP) BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
+                  NEVER use DATE_KEY → DIM_DATE join for date filtering — it is broken (surrogate key mismatch)
+                  and returns ZERO rows. NEVER use LOADED_AT as the business date.
                 important_columns:
                   - "FACT_ENGAGEMENT_KEY"
                   - "SUBSCRIBER_KEY"
@@ -320,6 +353,9 @@ semantic_layer:
               FIPSAR_DW.GOLD.VW_MART_JOURNEY_INTELLIGENCE:
                 grain: "One row per lead or engagement event observation in the business mart"
                 business_role: "Final business-ready journey intelligence mart"
+                business_date_column: "EVENT_TIMESTAMP"
+                date_type: "TIMESTAMP"
+                date_parsing_note: "Use DATE(EVENT_TIMESTAMP) BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD' for date filtering. NEVER use _LOADED_AT."
 
       FIPSAR_SFMC_EVENTS:
         description: "Raw SFMC event landing layer — primary fallback when FACT_SFMC_ENGAGEMENT is empty"
@@ -333,6 +369,9 @@ semantic_layer:
               FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT:
                 grain: "One raw sent event per subscriber per job"
                 business_role: "Source of truth for email sends — use for actual send count"
+                business_date_column: "EVENT_DATE"
+                date_type: "VARCHAR — format MM/DD/YYYY HH:MM:SS AM/PM"
+                date_parsing_note: "Use TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') for date filtering. NEVER use bare TRY_TO_DATE(EVENT_DATE) — returns NULL. Use _LOADED_AT only as last-resort fallback."
                 key_columns:
                   - "SUBSCRIBER_KEY"
                   - "JOB_ID"
@@ -343,6 +382,9 @@ semantic_layer:
               FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS:
                 grain: "One raw open event"
                 business_role: "Email open events — use IS_UNIQUE for unique open count"
+                business_date_column: "EVENT_DATE"
+                date_type: "VARCHAR — format MM/DD/YYYY HH:MM:SS AM/PM"
+                date_parsing_note: "Use TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') for date filtering."
                 key_columns:
                   - "SUBSCRIBER_KEY"
                   - "JOB_ID"
@@ -353,6 +395,9 @@ semantic_layer:
               FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS:
                 grain: "One raw click event"
                 business_role: "Email click events — use URL and IS_UNIQUE for link-level analysis"
+                business_date_column: "EVENT_DATE"
+                date_type: "VARCHAR — format MM/DD/YYYY HH:MM:SS AM/PM"
+                date_parsing_note: "Use TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') for date filtering."
                 key_columns:
                   - "SUBSCRIBER_KEY"
                   - "JOB_ID"
@@ -364,6 +409,9 @@ semantic_layer:
               FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_BOUNCES:
                 grain: "One raw bounce event"
                 business_role: "Bounce events — BOUNCE_CATEGORY distinguishes Hard vs Soft"
+                business_date_column: "EVENT_DATE"
+                date_type: "VARCHAR — format MM/DD/YYYY HH:MM:SS AM/PM"
+                date_parsing_note: "Use TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') for date filtering."
                 key_columns:
                   - "SUBSCRIBER_KEY"
                   - "JOB_ID"
@@ -388,7 +436,8 @@ semantic_layer:
                   - "RECORD_TYPE"
                 join_notes:
                   - "SUBSCRIBER_KEY = MASTER_PATIENT_ID = PROSPECT_ID — all the same FIP... value"
-                  - "EVENT_DATE is VARCHAR — use TRY_TO_DATE(EVENT_DATE) for date comparisons"
+                  - "EVENT_DATE is VARCHAR stored as 'MM/DD/YYYY HH:MM:SS AM/PM' (e.g. '01/04/2026 10:58:00 AM') — applies to RAW_SFMC_OPENS, RAW_SFMC_CLICKS, RAW_SFMC_SENT, RAW_SFMC_UNSUBSCRIBES"
+                  - "For date filtering ALWAYS use: TRY_TO_DATE(SPLIT(EVENT_DATE, ' ')[0]::STRING, 'MM/DD/YYYY') — bare TRY_TO_DATE(EVENT_DATE) returns NULL for all rows"
                   - "If a prospect's unsubscribe EVENT_DATE < a stage's expected send date → they would NOT receive that stage email"
                   - "Use this table alongside JOURNEY_DETAILS to explain per-prospect stage drops"
               FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SPAM:

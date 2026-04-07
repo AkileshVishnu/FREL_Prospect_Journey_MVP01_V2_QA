@@ -1,4 +1,4 @@
-# FIPSAR Prospect Journey Intelligence — Python dependencies
+# FREL Prospect Journey MVP01 — Python dependencies
 # Install with: pip install -r requirements.txt
 
 # Snowflake
@@ -15,17 +15,17 @@ openai
 
 # Data handling
 pandas
-tabulate      # Required by DataFrame.to_markdown()
+tabulate
 
-# YAML parsing (built into Python stdlib but explicit for clarity)
+# YAML parsing
 pyyaml
 
 # Streamlit UI (1.37+ required for st.audio_input voice recording widget)
-streamlit
+streamlit>=1.37.0
 
 # Charts
 plotly
-kaleido       # Required for Plotly chart → PNG export (email attachments)
+kaleido==0.2.1
 
-# Optional: notebook/REPL convenience
-ipython
+# Email
+secure-smtplib
