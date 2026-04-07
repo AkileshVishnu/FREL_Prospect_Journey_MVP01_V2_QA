@@ -4,14 +4,16 @@
 # Snowflake
 snowflake-connector-python==3.12.3
 
-# LangChain + LangGraph (pinned to avoid breaking API changes)
-langchain==0.3.25
-langchain-core==0.3.55
-langchain-openai==0.3.16
-langgraph==0.3.21
+# LangChain + LangGraph
+# Using ~= (compatible release) so pip can resolve inter-package sub-versions
+# while staying within the same major.minor line
+langchain~=0.3.25
+langchain-core~=0.3.58
+langchain-openai~=0.3.16
+langgraph~=0.3.21
 
 # OpenAI SDK
-openai==1.75.0
+openai~=1.75.0
 
 # Data handling
 pandas==2.2.3
@@ -29,5 +31,3 @@ plotly==5.24.1
 # It is not installable on Linux/Python 3.11 (Render runtime), so it is
 # excluded here. email_sender.py has a built-in graceful fallback when absent.
 # Install locally on Windows only: pip install kaleido==0.2.1
-
-# Email (stdlib smtplib used directly — no extra package needed)
