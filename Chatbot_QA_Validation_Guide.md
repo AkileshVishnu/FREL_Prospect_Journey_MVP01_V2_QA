@@ -532,7 +532,7 @@ Trace prospect FIP000001 through the entire journey —
 from when they were first ingested to what SFMC emails they received.
 ```
 
-> *(Replace FIP000001 with a real MASTER_PATIENT_ID from your data. Run `SELECT TOP 1 MASTER_PATIENT_ID FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER` to get a valid ID.)*
+> *(Replace FIP000001 with a real MASTER_PATIENT_ID from your data. Run `SELECT TOP 1 MASTER_PATIENT_ID FROM QA_FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER` to get a valid ID.)*
 
 **What the agent should do:**
 - Call `trace_prospect(email_or_id="FIP000001")`

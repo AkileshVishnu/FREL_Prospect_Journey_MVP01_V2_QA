@@ -411,28 +411,28 @@ Visualise conversion probability distribution.
 
 ## Section 7 — AI Intelligence & Scoring Tables
 
-> Demonstrates: `get_ai_intelligence`, INFORMATION_SCHEMA column discovery, FIPSAR_AI database
+> Demonstrates: `get_ai_intelligence`, INFORMATION_SCHEMA column discovery, QA_FIPSAR_AI database
 
 ### 7.1 AI Table Exploration
 
 ```
-What AI tables are available in the FIPSAR_AI database?
+What AI tables are available in the QA_FIPSAR_AI database?
 ```
-*Expected: Table list with schema discovery — column names and sample rows from whatever AI tables exist in the FIPSAR_AI database.*
+*Expected: Table list with schema discovery — column names and sample rows from whatever AI tables exist in the QA_FIPSAR_AI database.*
 
 ---
 
 ```
 Show me the AI feature scores for prospects.
 ```
-*Expected: INFORMATION_SCHEMA-discovered columns and sample data from FIPSAR_AI tables.*
+*Expected: INFORMATION_SCHEMA-discovered columns and sample data from QA_FIPSAR_AI tables.*
 
 ---
 
 ```
 What engagement score metrics does the AI compute for each prospect?
 ```
-*Expected: Column-level breakdown of whatever scoring/feature columns exist in FIPSAR_AI — no hardcoded assumptions.*
+*Expected: Column-level breakdown of whatever scoring/feature columns exist in QA_FIPSAR_AI — no hardcoded assumptions.*
 
 ---
 

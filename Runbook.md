@@ -64,11 +64,11 @@ Conversational AI (LangGraph ReAct Agent)
         │
         ▼ (SQL executes against Snowflake — read-only)
 Snowflake Data Platform
-  FIPSAR_PHI_HUB     → Lead intake, mastered Prospects, identity bridge
-  FIPSAR_DW          → Bronze / Silver / Gold warehouse, SFMC engagement facts
-  FIPSAR_SFMC_EVENTS → Raw SFMC event landing tables
-  FIPSAR_AUDIT       → Pipeline run log, DQ rejection log
-  FIPSAR_AI          → AI feature tables, semantic scores
+  QA_FIPSAR_PHI_HUB     → Lead intake, mastered Prospects, identity bridge
+  QA_FIPSAR_DW          → Bronze / Silver / Gold warehouse, SFMC engagement facts
+  QA_FIPSAR_SFMC_EVENTS → Raw SFMC event landing tables
+  QA_FIPSAR_AUDIT       → Pipeline run log, DQ rejection log
+  QA_FIPSAR_AI          → AI feature tables, semantic scores
         │
         ├── Text results → markdown tables → LLM composes business-language response
         │
@@ -204,7 +204,7 @@ EMAIL_TO=akilesh@fipsar.com
 > For Office 365: set `EMAIL_SMTP_HOST=smtp.office365.com` and `EMAIL_SMTP_PORT=587`.
 
 > `SNOWFLAKE_DATABASE` and `SNOWFLAKE_SCHEMA` are optional — all queries use fully-qualified
-> 3-part names (`FIPSAR_DW.GOLD.DIM_PROSPECT`), so the default connection database is irrelevant.
+> 3-part names (`QA_FIPSAR_DW.GOLD.DIM_PROSPECT`), so the default connection database is irrelevant.
 
 ---
 
@@ -297,8 +297,8 @@ Open `http://localhost:8501`. In the sidebar:
          ▼
 ┌──────────────────────────────────────────────────────┐
 │  Snowflake                                            │
-│  FIPSAR_PHI_HUB · FIPSAR_DW · FIPSAR_SFMC_EVENTS    │
-│  FIPSAR_AUDIT · FIPSAR_AI                            │
+│  QA_FIPSAR_PHI_HUB · QA_FIPSAR_DW · QA_FIPSAR_SFMC_EVENTS    │
+│  QA_FIPSAR_AUDIT · QA_FIPSAR_AI                            │
 └──────────────────────────────────────────────────────┘
 
 Supporting modules:
@@ -317,7 +317,7 @@ Supporting modules:
 | `SNOWFLAKE_USER` | Username | required |
 | `SNOWFLAKE_PASSWORD` | Password | required |
 | `SNOWFLAKE_WAREHOUSE` | Compute warehouse | `COMPUTE_WH` |
-| `SNOWFLAKE_DATABASE` | Default DB for connection (not used in queries) | `FIPSAR_DW` |
+| `SNOWFLAKE_DATABASE` | Default DB for connection (not used in queries) | `QA_FIPSAR_DW` |
 | `SNOWFLAKE_SCHEMA` | Default schema for connection (not used in queries) | `GOLD` |
 | `SNOWFLAKE_ROLE` | Role with SELECT on all FIPSAR databases | required |
 | `OPENAI_API_KEY` | OpenAI API key | required |

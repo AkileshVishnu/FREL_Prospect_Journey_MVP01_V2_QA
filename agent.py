@@ -19,6 +19,7 @@ Public API:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from typing import Any
 
@@ -32,6 +33,49 @@ from semantic_model import SYSTEM_PROMPT
 from tools import ALL_TOOLS
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_response_markdown(text: str) -> str:
+    """
+    Keep final chatbot output readable and aligned with the business response format
+    even when the model drifts into older footer-oriented headings.
+    """
+    if not text:
+        return text
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    replacements = {
+        "**TL;DR**": "## Quick Explanation",
+        "TL;DR": "## Quick Explanation",
+        "**Key Insights**": "## Insights",
+        "Key Insights": "## Insights",
+        "**Dig Deeper**": "## Follow-up Questions",
+        "Dig Deeper": "## Follow-up Questions",
+    }
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+
+    normalized = re.sub(r"(?m)^\s*---\s*$", "", normalized)
+    normalized = re.sub(r"(?m)^\s*[•●◦]\s+", "- ", normalized)
+
+    has_primary_heading = any(
+        marker in normalized
+        for marker in (
+            "## Quick Explanation",
+            "## Data Snapshot",
+            "## Chart",
+            "## AI Summary",
+            "## Insights",
+            "## Recommendations",
+            "## Follow-up Questions",
+        )
+    )
+    if not has_primary_heading and "\n" in normalized and len(normalized) > 220:
+        normalized = "## Quick Explanation\n" + normalized
+
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    return normalized
 
 # ---------------------------------------------------------------------------
 # LLM setup
@@ -74,6 +118,18 @@ def _state_modifier(state: dict) -> list[BaseMessage]:
         "Lead with insights, not raw data. Use contextual callouts when metrics are notable. "
         "Always auto-generate at least one chart for quantitative answers. "
         "End every response with the TL;DR + Key Insights + Dig Deeper footer.\n"
+    )
+    date_header = (
+        f"TODAY'S DATE: {today.strftime('%d %B %Y')} "
+        f"(YYYY-MM-DD: {today.isoformat()})\n"
+        f"CURRENT MONTH: {today.strftime('%B %Y')}\n"
+        f"CURRENT YEAR: {today.year}\n"
+        "IMPORTANT: When the user says 'today', 'this month', 'current month', "
+        "'this week', or 'recent', always use the date above. "
+        "Never use your training-data cutoff date as 'today'.\n\n"
+        "RESPONSE STYLE REMINDER: Use the structured business response format from the system prompt. "
+        "Lead with the answer, keep quantitative sections clean, and avoid generic footer blocks. "
+        "Use charts whenever the answer is quantitative or comparative.\n"
     )
     full_prompt = date_header + "\n" + SYSTEM_PROMPT
     messages = state.get("messages", [])
@@ -126,7 +182,7 @@ def chat(session_id: str, user_message: str) -> str:
     messages: list[BaseMessage] = result.get("messages", [])
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and msg.content:
-            return str(msg.content)
+            return _normalize_response_markdown(str(msg.content))
 
     return "I was unable to generate a response. Please try rephrasing your question."
 

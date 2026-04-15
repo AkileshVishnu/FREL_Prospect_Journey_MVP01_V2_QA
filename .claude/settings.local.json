@@ -12,7 +12,26 @@
       "Bash(where npm:*)",
       "Bash(npm --version)",
       "Bash(npm install:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(grep -E \"\\\\.py$|^d\")",
+      "Bash(ls -lah /c/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4/*.yaml)",
+      "Bash(wc -l \"/c/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4_QA/Snowflake_Setup/DML_Insert_Statements\"/*.sql)",
+      "Bash(grep -c \"INSERT INTO\" \"/c/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4_QA/Snowflake_Setup/DML_Insert_Statements\"/*.sql)",
+      "Bash(python3 -)",
+      "Bash(ls /c/Python*)",
+      "Read(//usr/**)",
+      "Bash(/c/Python314/python -)",
+      "Bash(sed -n 8,12p c:/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4_QA/Snowflake_Setup/DML_Insert_Statements/04_DML_BRONZE_DQ_SILVER.sql)",
+      "Bash(sed -n 786,800p c:/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4_QA/Snowflake_Setup/DML_Insert_Statements/04_DML_BRONZE_DQ_SILVER.sql)",
+      "Bash(sed -n 780,800p c:/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4_QA/Snowflake_Setup/DML_Insert_Statements/04_DML_BRONZE_DQ_SILVER.sql)",
+      "Bash(sed -n 925,945p c:/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4_QA/Snowflake_Setup/DML_Insert_Statements/04_DML_BRONZE_DQ_SILVER.sql)",
+      "Bash(sed -n 1700,1710p c:/Users/Akilesh/OneDrive/Desktop/GenAI_Projects/Snowflake_Projects/SFMC_Prospects_MVP01_Version4_QA/Snowflake_Setup/DML_Insert_Statements/04_DML_BRONZE_DQ_SILVER.sql)",
+      "Bash(python3)",
+      "Bash(python)",
+      "Bash(python -c \"import docx; print\\('python-docx OK'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"import docx; print\\('OK'\\)\")",
+      "Bash(python generate_demo_doc.py)"
     ]
   }
 }

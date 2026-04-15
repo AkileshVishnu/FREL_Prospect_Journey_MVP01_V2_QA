@@ -52,7 +52,7 @@ class _SnowflakeConfig:
         self.user      = os.environ["SNOWFLAKE_USER"]
         self.password  = os.environ["SNOWFLAKE_PASSWORD"]
         self.warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
-        self.database  = os.environ.get("SNOWFLAKE_DATABASE", "FIPSAR_DW")
+        self.database  = os.environ.get("SNOWFLAKE_DATABASE", "QA_FIPSAR_DW")
         self.schema    = os.environ.get("SNOWFLAKE_SCHEMA", "GOLD")
         self.role      = os.environ.get("SNOWFLAKE_ROLE", "SYSADMIN")
 

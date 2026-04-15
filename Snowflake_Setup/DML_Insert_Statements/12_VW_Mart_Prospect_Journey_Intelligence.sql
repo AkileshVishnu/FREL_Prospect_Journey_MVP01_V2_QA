@@ -1,0 +1,138 @@
+
+
+select * from QA_FIPSAR_DW.GOLD.VW_MART_JOURNEY_INTELLIGENCE;
+select * from fipsar_dw.gold.fact_sfmc_engagement;
+
+-- ============================================================================
+-- SECTION C: CORRECTED VW_MART_JOURNEY_INTELLIGENCE
+-- ENHANCEMENT-C: Subscriber key maps directly to MASTER_PATIENT_ID.
+-- Removes incorrect IDENTITY_KEY join. Adds IS_SUPPRESSED to output.
+-- ============================================================================
+CREATE OR REPLACE VIEW QA_FIPSAR_DW.GOLD.VW_MART_JOURNEY_INTELLIGENCE AS
+WITH email_stage_map AS (
+    SELECT * FROM (VALUES
+        ('Prospect_Welcome_01_Welcome_Email',            'J01_Welcome',      'Prospect Welcome Journey',       1,'Welcome Email',        FALSE,'HIGH'),
+        ('Prospect_Welcome_01_Welcome_Email_Resend',     'J01_Welcome',      'Prospect Welcome Journey',       1,'Welcome Email',        TRUE, 'HIGH'),
+        ('Prospect_Welcome_02_Education_Email',          'J01_Welcome',      'Prospect Welcome Journey',       2,'Education Email',      FALSE,'HIGH'),
+        ('Prospect_Nurture_01_Education_Email_1',        'J02_Nurture',      'Prospect Nurture Journey',       3,'Education Email 1',    FALSE,'HIGH'),
+        ('Prospect_Nurture_01_Education_Email_1_Resend', 'J02_Nurture',      'Prospect Nurture Journey',       3,'Education Email 1',    TRUE, 'HIGH'),
+        ('Prospect_Nurture_02_Education_Email_2',        'J02_Nurture',      'Prospect Nurture Journey',       4,'Education Email 2',    FALSE,'HIGH'),
+        ('Prospect_Nurture_03_Prospect_Story_Email',     'J02_Nurture',      'Prospect Nurture Journey',       5,'Prospect Story Email', FALSE,'HIGH'),
+        ('Prospect_Nurture_03_Prospect_Story_Email_Resend','J02_Nurture',    'Prospect Nurture Journey',       5,'Prospect Story Email', TRUE, 'HIGH'),
+        ('Prospect_Conversion_01_Conversion_Email',      'J03_Conversion',   'High Engagement Conversion',     6,'Conversion Email',     FALSE,'HIGH'),
+        ('Prospect_Conversion_02_Reminder_Email',        'J03_Conversion',   'High Engagement Conversion',     7,'Reminder Email',       FALSE,'HIGH'),
+        ('Prospect_ReEngagement_01_ReEngagement_Email',  'J04_ReEngagement', 'Low Engagement Re-engagement',   8,'Re-engagement Email',  FALSE,'LOW'),
+        ('Prospect_ReEngagement_02_Final_Reminder_Email','J04_ReEngagement', 'Low Engagement Re-engagement',   9,'Final Reminder Email', FALSE,'LOW')
+    ) AS t(EMAIL_NAME,JOURNEY_CODE,JOURNEY_NAME,STAGE_NUMBER,STAGE_NAME,IS_RESEND,ENGAGEMENT_PATH)
+),
+ 
+engagement AS (
+    SELECT
+        fe.FACT_ENGAGEMENT_KEY                        AS ROW_ID,
+        dd.FULL_DATE                                  AS EVENT_DATE,
+        fe.EVENT_TIMESTAMP,
+        TO_CHAR(dd.FULL_DATE,'YYYY-MM')               AS EVENT_MONTH,
+        TO_CHAR(dd.FULL_DATE,'YYYY') || '-W' || LPAD(dd.WEEK_OF_YEAR::VARCHAR,2,'0') AS EVENT_WEEK,
+        dd.DAY_NAME                                   AS EVENT_DAY_OF_WEEK,
+        dd.IS_WEEKEND,
+        -- ENHANCEMENT-C: direct join on MASTER_PATIENT_ID (not IDENTITY_KEY)
+        COALESCE(dp.MASTER_PATIENT_ID, fe.SUBSCRIBER_KEY) AS MASTER_PATIENT_ID,
+        fe.SUBSCRIBER_KEY,
+        dp.FIRST_NAME, dp.LAST_NAME, dp.EMAIL, dp.AGE, dp.AGE_GROUP,
+        dp.STATE, dg.REGION, dp.PRIMARY_CHANNEL AS LEAD_SOURCE, dp.PATIENT_CONSENT,
+        CASE WHEN dp.PATIENT_CONSENT=TRUE AND dp.EMAIL IS NOT NULL THEN 1 ELSE 0 END AS IS_ELIGIBLE_PROSPECT,
+        0 AS IS_LEAD, 0 AS IS_VALID_LEAD, 0 AS IS_INVALID_LEAD,
+        esm.JOURNEY_CODE, esm.JOURNEY_NAME, esm.STAGE_NUMBER, esm.STAGE_NAME,
+        dj.EMAIL_NAME, dj.EMAIL_SUBJECT,
+        COALESCE(esm.IS_RESEND, FALSE)                AS IS_RESEND,
+        UPPER(fe.EVENT_TYPE)                          AS EVENT_TYPE,
+        CASE WHEN UPPER(fe.EVENT_TYPE) IN ('SENT','UNSENT') THEN 1 ELSE 0 END AS IS_EXPECTED_SEND,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='SENT'  THEN 1 ELSE 0 END AS IS_ACTUAL_SEND,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='UNSENT' THEN 1 ELSE 0 END AS IS_UNSENT,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='UNSENT' AND UPPER(COALESCE(fe.REASON,'')) LIKE '%SUPPRESS%' THEN 1 ELSE 0 END AS IS_UNSENT_SUPPRESSED,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='UNSENT' AND UPPER(COALESCE(fe.REASON,'')) NOT LIKE '%SUPPRESS%' THEN 1 ELSE 0 END AS IS_UNSENT_FATAL,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='SENT' AND fe.BOUNCE_CATEGORY IS NULL AND NOT COALESCE(fe.IS_SUPPRESSED,FALSE) THEN 1 ELSE 0 END AS IS_DELIVERED,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='OPEN' THEN 1 ELSE 0 END AS IS_OPENED,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='CLICK' THEN 1 ELSE 0 END AS IS_CLICKED,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='BOUNCE' THEN 1 ELSE 0 END AS IS_BOUNCED,
+        CASE WHEN UPPER(fe.EVENT_TYPE) IN ('UNSUBSCRIBE','UNSUBSCRIBES') THEN 1 ELSE 0 END AS IS_UNSUBSCRIBED,
+        CASE WHEN UPPER(COALESCE(fe.BOUNCE_CATEGORY,''))='HARD BOUNCE' THEN 1 ELSE 0 END AS IS_HARD_BOUNCE,
+        CASE WHEN UPPER(COALESCE(fe.BOUNCE_CATEGORY,''))='SOFT BOUNCE' THEN 1 ELSE 0 END AS IS_SOFT_BOUNCE,
+        fe.BOUNCE_CATEGORY, fe.BOUNCE_TYPE,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='OPEN'  AND COALESCE(fe.IS_UNIQUE,FALSE) THEN 1 ELSE 0 END AS IS_UNIQUE_OPEN,
+        CASE WHEN UPPER(fe.EVENT_TYPE)='CLICK' AND COALESCE(fe.IS_UNIQUE,FALSE) THEN 1 ELSE 0 END AS IS_UNIQUE_CLICK,
+        fe.CLICK_URL, fe.DOMAIN,
+        COALESCE(esm.ENGAGEMENT_PATH,'UNKNOWN')       AS ENGAGEMENT_PATH,
+        CASE WHEN esm.ENGAGEMENT_PATH='HIGH' AND esm.STAGE_NUMBER>=6 THEN 1 ELSE 0 END AS HIGH_ENGAGEMENT_FLAG,
+        0 AS CONVERTED_FLAG,
+        CASE WHEN esm.STAGE_NUMBER IN (7,9) THEN 1 ELSE 0 END AS JOURNEY_COMPLETE_FLAG,
+        0 AS JOURNEY_DROPOFF_FLAG,
+        COALESCE(fe.IS_SUPPRESSED, FALSE)             AS IS_SUPPRESSED,   -- ENHANCEMENT-B
+        fe.SUPPRESSION_REASON,                                             -- ENHANCEMENT-B
+        DATEDIFF(DAY, dp.FIRST_INTAKE_DATE, dd.FULL_DATE) AS DAYS_SINCE_INTAKE,
+        DATEDIFF(DAY, dp.FIRST_INTAKE_DATE, dd.FULL_DATE) AS DAYS_IN_JOURNEY,
+        1 AS SEND_ACCURACY_FLAG,
+        CASE WHEN fe.IS_SUPPRESSED THEN 0 WHEN dp.EMAIL IS NULL THEN 0 ELSE 1 END AS DATA_ACCURACY_FLAG,
+        CASE WHEN fe.IS_SUPPRESSED OR dp.EMAIL IS NULL THEN 1 ELSE 0 END AS DQ_ISSUE_FLAG,
+        CASE WHEN fe.IS_SUPPRESSED     THEN 'SUPPRESSED'
+             WHEN dp.EMAIL IS NULL     THEN 'NULL_EMAIL'
+             ELSE NULL END AS DQ_ISSUE_TYPE,
+        'SFMC_EVENTS' AS PIPELINE_SOURCE,
+        fe.LOADED_AT AS GOLD_LOADED_AT
+    FROM QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT fe
+    -- ENHANCEMENT-C: correct join — SUBSCRIBER_KEY = MASTER_PATIENT_ID
+    LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_PROSPECT dp
+        ON fe.SUBSCRIBER_KEY = dp.MASTER_PATIENT_ID
+    LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_SFMC_JOB dj
+        ON fe.JOB_KEY = dj.JOB_KEY
+    LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_DATE dd
+        ON fe.DATE_KEY = dd.DATE_KEY
+    LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_GEOGRAPHY dg
+        ON dp.CITY = dg.CITY AND dp.STATE = dg.STATE AND dp.ZIP_CODE = dg.ZIP_CODE
+    LEFT JOIN email_stage_map esm
+        ON dj.EMAIL_NAME = esm.EMAIL_NAME
+),
+ 
+leads AS (
+    SELECT
+        fi.INTAKE_KEY + 1000000 AS ROW_ID,
+        fi.FILE_DATE AS EVENT_DATE, fi.SUBMISSION_TIMESTAMP AS EVENT_TIMESTAMP,
+        TO_CHAR(fi.FILE_DATE,'YYYY-MM') AS EVENT_MONTH,
+        TO_CHAR(fi.FILE_DATE,'YYYY') || '-W' || LPAD(WEEKOFYEAR(fi.FILE_DATE)::VARCHAR,2,'0') AS EVENT_WEEK,
+        DAYNAME(fi.FILE_DATE) AS EVENT_DAY_OF_WEEK,
+        CASE WHEN DAYOFWEEK(fi.FILE_DATE) IN (0,6) THEN TRUE ELSE FALSE END AS IS_WEEKEND,
+        COALESCE(dp.MASTER_PATIENT_ID, fi.MASTER_PATIENT_ID) AS MASTER_PATIENT_ID,
+        COALESCE(dp.MASTER_PATIENT_ID, fi.MASTER_PATIENT_ID) AS SUBSCRIBER_KEY,
+        dp.FIRST_NAME, dp.LAST_NAME, dp.EMAIL, dp.AGE, dp.AGE_GROUP,
+        dp.STATE, dg.REGION, dp.PRIMARY_CHANNEL AS LEAD_SOURCE, dp.PATIENT_CONSENT,
+        CASE WHEN dp.PATIENT_CONSENT=TRUE AND dp.EMAIL IS NOT NULL THEN 1 ELSE 0 END AS IS_ELIGIBLE_PROSPECT,
+        1 AS IS_LEAD,
+        CASE WHEN dp.PATIENT_CONSENT=TRUE AND dp.EMAIL IS NOT NULL THEN 1 ELSE 0 END AS IS_VALID_LEAD,
+        CASE WHEN dp.PATIENT_CONSENT=FALSE OR dp.EMAIL IS NULL THEN 1 ELSE 0 END AS IS_INVALID_LEAD,
+        CAST(NULL AS VARCHAR) AS JOURNEY_CODE, CAST(NULL AS VARCHAR) AS JOURNEY_NAME,
+        0 AS STAGE_NUMBER, 'Lead Registration' AS STAGE_NAME,
+        CAST(NULL AS VARCHAR) AS EMAIL_NAME, CAST(NULL AS VARCHAR) AS EMAIL_SUBJECT,
+        FALSE AS IS_RESEND, 'LEAD' AS EVENT_TYPE,
+        0,0,0,0,0,0,0,0,0,0,0,0,
+        CAST(NULL AS VARCHAR) AS BOUNCE_CATEGORY, CAST(NULL AS VARCHAR) AS BOUNCE_TYPE,
+        0,0,
+        CAST(NULL AS VARCHAR) AS CLICK_URL, CAST(NULL AS VARCHAR) AS DOMAIN,
+        CAST(NULL AS VARCHAR) AS ENGAGEMENT_PATH,
+        0,0,0,0,
+        FALSE AS IS_SUPPRESSED, CAST(NULL AS VARCHAR) AS SUPPRESSION_REASON,
+        0 AS DAYS_SINCE_INTAKE, 0 AS DAYS_IN_JOURNEY,
+        1 AS SEND_ACCURACY_FLAG,
+        CASE WHEN dp.PATIENT_CONSENT=TRUE AND dp.EMAIL IS NOT NULL THEN 1 ELSE 0 END AS DATA_ACCURACY_FLAG,
+        CASE WHEN dp.EMAIL IS NULL OR dp.PATIENT_CONSENT=FALSE THEN 1 ELSE 0 END AS DQ_ISSUE_FLAG,
+        CASE WHEN dp.EMAIL IS NULL THEN 'NULL_EMAIL'
+             WHEN dp.PATIENT_CONSENT=FALSE THEN 'NO_CONSENT' ELSE NULL END AS DQ_ISSUE_TYPE,
+        'API_INTAKE' AS PIPELINE_SOURCE,
+        fi.GOLD_LOADED_AT
+    FROM QA_FIPSAR_DW.GOLD.FACT_PROSPECT_INTAKE fi
+    LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_PROSPECT dp ON fi.PROSPECT_KEY = dp.PROSPECT_KEY
+    LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_GEOGRAPHY dg
+        ON dp.CITY=dg.CITY AND dp.STATE=dg.STATE AND dp.ZIP_CODE=dg.ZIP_CODE
+)
+SELECT * FROM engagement
+UNION ALL
+SELECT * FROM leads;

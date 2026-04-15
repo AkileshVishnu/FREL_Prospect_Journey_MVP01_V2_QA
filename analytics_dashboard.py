@@ -99,7 +99,7 @@ def _journey_where(journey: str, col: str = "JOURNEY_CODE") -> str:
 def _fetch_filter_options() -> dict[str, list]:
     channels = _run("""
         SELECT DISTINCT COALESCE(UPPER(CHANNEL), 'UNKNOWN') AS CH
-        FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE ORDER BY 1
+        FROM QA_FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE ORDER BY 1
     """)
     ch_list = ["All"] + (channels.iloc[:, 0].tolist() if not channels.empty else [])
     journeys = ["All", "J01 - Welcome", "J02 - Nurture",
@@ -110,16 +110,17 @@ def _fetch_filter_options() -> dict[str, list]:
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch_funnel_kpis(s: date, e: date, channel: str) -> dict[str, int]:
     ch = _chan_where(channel)
-    leads     = _scalar(_run(f"SELECT COUNT(*) FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE WHERE {_date_flt('FILE_DATE',s,e)}{ch}"))
-    prospects = _scalar(_run(f"SELECT COUNT(*) FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER  WHERE {_date_flt('FILE_DATE',s,e)}{ch}"))
+    leads     = _scalar(_run(f"SELECT COUNT(*) FROM QA_FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE WHERE {_date_flt('FILE_DATE',s,e)}{ch}"))
+    prospects = _scalar(_run(f"SELECT COUNT(*) FROM QA_FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER  WHERE {_date_flt('FILE_DATE',s,e)}{ch}"))
     dq_passed = _scalar(_run(f"""
         SELECT COUNT(*)
-        FROM FIPSAR_DW.SILVER.SLV_PROSPECT_MASTER
+        FROM QA_FIPSAR_DW.SILVER.SLV_PROSPECT_MASTER
         WHERE {_date_flt('FILE_DATE', s, e)}
+          AND DQ_PASSED = TRUE
     """))
     sfmc_load = _scalar(_run(f"""
         SELECT COUNT(*)
-        FROM FIPSAR_DW.GOLD.DIM_PROSPECT
+        FROM QA_FIPSAR_DW.GOLD.DIM_PROSPECT
         WHERE {_date_flt('FIRST_INTAKE_DATE', s, e)}
     """))
 
@@ -128,10 +129,11 @@ def _fetch_funnel_kpis(s: date, e: date, channel: str) -> dict[str, int]:
     # differs from STG for reprocessed records, causing impossible negative sub-period counts.
     invalid = _scalar(_run(f"""
         SELECT COUNT(*)
-        FROM FIPSAR_AUDIT.PIPELINE_AUDIT.DQ_REJECTION_LOG
+        FROM QA_FIPSAR_AUDIT.PIPELINE_AUDIT.DQ_REJECTION_LOG
         WHERE UPPER(REJECTION_REASON) IN (
             'NULL_EMAIL','NULL_FIRST_NAME','NULL_LAST_NAME',
-            'NULL_PHONE_NUMBER','INVALID_FILE_DATE','NO_CONSENT'
+            'NULL_PHONE_NUMBER','INVALID_FILE_DATE','NO_CONSENT',
+            'TEST_EMAIL_DOMAIN'
         )
         AND (
             TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING)
@@ -159,14 +161,14 @@ def _fetch_email_kpis(s: date, e: date, journey: str) -> dict[str, int]:
 
     # Emails Sent — gold table first, raw fallback
     sent = _scalar(_run(f"""
-        SELECT COUNT(*) FROM FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT
+        SELECT COUNT(*) FROM QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT
         WHERE UPPER(EVENT_TYPE) = 'SENT'
           AND TRY_TO_DATE(EVENT_TIMESTAMP::STRING) BETWEEN '{s}' AND '{e}'
           {jw}
     """))
     if sent == 0:
         sent = _scalar(_run(f"""
-            SELECT COUNT(*) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT
+            SELECT COUNT(*) FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT
             WHERE (
                 TRY_TO_DATE(SPLIT(EVENT_DATE, ' ')[0]::STRING, 'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
                 OR (
@@ -191,33 +193,33 @@ def _fetch_email_kpis(s: date, e: date, journey: str) -> dict[str, int]:
 
     opened = _scalar(_run(f"""
         SELECT COUNT(*)
-        FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS
         WHERE {_event_date_filter()}
     """))
     if opened == 0:
         opened = _scalar(_run(
-            "SELECT COUNT(*) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS"
+            "SELECT COUNT(*) FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS"
         ))
 
     clicked = _scalar(_run(f"""
         SELECT COUNT(*)
-        FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS
         WHERE {_event_date_filter()}
     """))
     if clicked == 0:
         clicked = _scalar(_run(
-            "SELECT COUNT(*) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS"
+            "SELECT COUNT(*) FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS"
         ))
 
     # Unsubscribes: DISTINCT SUBSCRIBER_KEY scoped to date range
     unsubscribed = _scalar(_run(f"""
         SELECT COUNT(DISTINCT SUBSCRIBER_KEY)
-        FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_UNSUBSCRIBES
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_UNSUBSCRIBES
         WHERE {_event_date_filter()}
     """))
     if unsubscribed == 0:
         unsubscribed = _scalar(_run(
-            "SELECT COUNT(DISTINCT SUBSCRIBER_KEY) FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_UNSUBSCRIBES"
+            "SELECT COUNT(DISTINCT SUBSCRIBER_KEY) FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_UNSUBSCRIBES"
         ))
 
     return {
@@ -238,7 +240,7 @@ def _fetch_conversion_segments(s: date, e: date, journey: str) -> dict[str, int]
                 SUM(CASE WHEN UPPER(EVENT_TYPE)='CLICK' THEN 1 ELSE 0 END) AS clicks,
                 SUM(CASE WHEN UPPER(EVENT_TYPE)='OPEN'  THEN 1 ELSE 0 END) AS opens,
                 SUM(CASE WHEN UPPER(EVENT_TYPE)='SENT'  THEN 1 ELSE 0 END) AS sends
-            FROM FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT
+            FROM QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT
             WHERE TRY_TO_DATE(EVENT_TIMESTAMP::STRING) BETWEEN '{s}' AND '{e}' {jw}
             GROUP BY SUBSCRIBER_KEY
         )
@@ -252,19 +254,19 @@ def _fetch_conversion_segments(s: date, e: date, journey: str) -> dict[str, int]
     if df.empty or _df_sum(df) == 0:
         df = _run(f"""
             WITH sent AS (
-                SELECT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT
+                SELECT SUBSCRIBER_KEY FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT
                 WHERE (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
                        OR (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') IS NULL
                            AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'))
             ),
             opens AS (
-                SELECT DISTINCT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS
+                SELECT DISTINCT SUBSCRIBER_KEY FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS
                 WHERE (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
                        OR (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') IS NULL
                            AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'))
             ),
             clicks AS (
-                SELECT DISTINCT SUBSCRIBER_KEY FROM FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS
+                SELECT DISTINCT SUBSCRIBER_KEY FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS
                 WHERE (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') BETWEEN '{s}' AND '{e}'
                        OR (TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') IS NULL
                            AND CAST(_LOADED_AT AS DATE) BETWEEN '{s}' AND '{e}'))
@@ -307,8 +309,8 @@ def _fetch_prospect_segments(s: date, e: date, journey: str) -> dict[str, int]:
                                     THEN e.JOB_ID END)                            AS sends,
                 COUNT(DISTINCT CASE WHEN UPPER(e.EVENT_TYPE) IN ('BOUNCE','UNSUBSCRIBE')
                                     THEN e.JOB_ID END)                            AS neg
-            FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER p
-            LEFT JOIN FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT e
+            FROM QA_FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER p
+            LEFT JOIN QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT e
                 ON e.SUBSCRIBER_KEY = p.MASTER_PATIENT_ID
                AND TRY_TO_DATE(e.EVENT_TIMESTAMP::STRING) BETWEEN '{s}' AND '{e}'
                {jw_eng}
@@ -330,7 +332,7 @@ def _fetch_prospect_segments(s: date, e: date, journey: str) -> dict[str, int]:
             SELECT
                 SUM(CASE WHEN IS_ACTIVE = TRUE  THEN 1 ELSE 0 END) AS active_ct,
                 SUM(CASE WHEN IS_ACTIVE = FALSE THEN 1 ELSE 0 END) AS inactive_ct
-            FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER
+            FROM QA_FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER
             WHERE {_date_flt('FILE_DATE', s, e)}
         """)
         if not fb.empty:
@@ -360,13 +362,13 @@ def _fetch_daily_trend(s: date, e: date, channel: str) -> pd.DataFrame:
     return _run(f"""
         WITH leads AS (
             SELECT TRY_TO_DATE(FILE_DATE::STRING) AS dt, COUNT(*) AS lead_cnt
-            FROM FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE
+            FROM QA_FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE
             WHERE {_date_flt('FILE_DATE',s,e)}{ch}
             GROUP BY 1
         ),
         prsp AS (
             SELECT TRY_TO_DATE(FILE_DATE::STRING) AS dt, COUNT(*) AS prospect_cnt
-            FROM FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER
+            FROM QA_FIPSAR_PHI_HUB.PHI_CORE.PHI_PROSPECT_MASTER
             WHERE {_date_flt('FILE_DATE',s,e)}{ch}
             GROUP BY 1
         )
