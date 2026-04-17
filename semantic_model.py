@@ -44,7 +44,8 @@ def get_funnel_stages() -> list[dict]:
 
 
 def get_journeys() -> list[dict]:
-    return _SL.get("journey_definition", {}).get("journeys", [])
+    """Returns stage_sequence list (new single-journey model)."""
+    return _SL.get("journey_definition", {}).get("stage_sequence", [])
 
 
 def get_canonical_kpis() -> list[dict]:
@@ -160,15 +161,28 @@ CLOSED-LOOP INTELLIGENCE PATTERN:
         )
     funnel_section = "\n".join(funnel_lines)
 
-    # --- Journeys ---
-    journey_lines = ["SFMC JOURNEY DEFINITIONS:"]
-    for j in get_journeys():
-        journey_lines.append(f"  {j.get('journey_code')} — {j.get('journey_name')}")
-        for s in j.get("stages", []):
-            emails = ", ".join(s.get("email_names", []))
-            journey_lines.append(
-                f"    Stage {s.get('stage_number')}: {s.get('stage_name')} → emails: {emails}"
-            )
+    # --- Journey (single Prospect Journey, 9 stages) ---
+    jd = _SL.get("journey_definition", {})
+    journey_name = jd.get("journey_name", "Prospect Journey")
+    stages = jd.get("stage_sequence", [])
+    journey_lines = [
+        f"SFMC JOURNEY — '{journey_name}' (1 journey, 9 stages, 4 phases):",
+        "  CRITICAL: There is ONLY ONE journey called 'Prospect Journey'. Do NOT refer to",
+        "  'Welcome Journey', 'Nurture Journey', 'Conversion Journey', or 'Re-engagement Journey'.",
+        "  Phases are groupings for reporting only — NOT separate journeys.",
+        "",
+        "  Stage → Business Name           → Phase                  → Physical Column (SENT)",
+    ]
+    for s in stages:
+        journey_lines.append(
+            f"  Stage {s.get('stage_number'):02d} — {s.get('business_name', ''):<28} "
+            f"({s.get('phase', ''):<24}) → {s.get('physical_sent_col', '')}"
+        )
+    journey_lines += [
+        "",
+        "  SUPPRESSION: SUPPRESSION_FLAG=TRUE means the prospect's journey was permanently ended.",
+        "  Full suppression interpretation rules are in the PROSPECT JOURNEY ANALYSIS FRAMEWORK section.",
+    ]
     journey_section = "\n".join(journey_lines)
 
     # --- Canonical KPIs ---
@@ -212,172 +226,75 @@ CLOSED-LOOP INTELLIGENCE PATTERN:
     sql_instructions = """
 SQL GENERATION INSTRUCTIONS:
   - Always use fully qualified table names: DATABASE.SCHEMA.TABLE
-  - The FIPSAR databases are: QA_FIPSAR_PHI_HUB, QA_FIPSAR_DW, QA_FIPSAR_SFMC_EVENTS, QA_FIPSAR_AUDIT, QA_FIPSAR_AI
-  - When physical columns say MASTER_PATIENT_ID, interpret as the Master Prospect ID
-  - Use VW_MART_JOURNEY_INTELLIGENCE for combined journey + engagement questions
-  - Use DQ_REJECTION_LOG for funnel drop, rejection, and suppression questions
-  - Use FACT_SFMC_ENGAGEMENT + DIM_SFMC_JOB for SFMC event questions
-  - Always include a date filter when the user asks about a specific date or period
-  - Cap result sets to 100 rows unless the user requests more
-  - For funnel drops: query both PHI_PROSPECT_MASTER counts AND DQ_REJECTION_LOG counts, then compare
-  - SUBSCRIBER_KEY in SFMC event tables and FACT_SFMC_ENGAGEMENT IS the MASTER_PATIENT_ID (FIP... format).
-    Join directly: fe.SUBSCRIBER_KEY = dp.MASTER_PATIENT_ID — do NOT use PATIENT_IDENTITY_XREF for this join.
-    PATIENT_IDENTITY_XREF is for identity audit and email-based lookups only.
-  - RAW_SFMC_PROSPECT_C and RAW_SFMC_PROSPECT_JOURNEY_DETAILS use PROSPECT_ID (= MASTER_PATIENT_ID)
-  - Use get_sfmc_stage_suppression for per-stage suppression analysis across stages 1-9
-  - Use get_sfmc_prospect_outbound_match to reconcile DIM_PROSPECT vs what is in SFMC
+  - FIPSAR databases: QA_FIPSAR_PHI_HUB, QA_FIPSAR_DW, QA_FIPSAR_SFMC_EVENTS, QA_FIPSAR_AUDIT, QA_FIPSAR_AI
+  - MASTER_PATIENT_ID = Prospect ID (FIP... format). Same value as SUBSCRIBER_KEY and PROSPECT_ID across all tables.
+  - Join SUBSCRIBER_KEY directly to MASTER_PATIENT_ID — do NOT use PATIENT_IDENTITY_XREF for this join.
+  - Always include a date filter when the user asks about a specific date or period.
+  - Cap result sets to 100 rows unless the user requests more.
 
-TIME DIMENSIONS — CANONICAL DATE COLUMN PER TABLE (use ONLY these for date filtering):
+CANONICAL DATE COLUMN PER TABLE (use ONLY these for date filtering):
 
-  PIPELINE LAYER          | TABLE                                    | BUSINESS DATE COLUMN  | TYPE        | PARSING RULE
-  ----------------------- | ---------------------------------------- | --------------------- | ----------- | ------------
-  Staging (raw intake)    | STG_PROSPECT_INTAKE                      | FILE_DATE             | VARCHAR     | Mixed format: COALESCE(TRY_TO_DATE(FILE_DATE,'YYYY-MM-DD'), TRY_TO_DATE(FILE_DATE,'DD-MM-YYYY'))
-  PHI (mastered prospect) | PHI_PROSPECT_MASTER                      | FILE_DATE             | DATE        | Direct BETWEEN — no parsing needed
-  Bronze DW               | BRZ_PROSPECT_MASTER                      | FILE_DATE             | DATE        | Direct BETWEEN
-  Silver DW               | SLV_PROSPECT_MASTER                      | FILE_DATE             | DATE        | Direct BETWEEN
-  Gold DW (dimension)     | DIM_PROSPECT                             | FIRST_INTAKE_DATE     | DATE        | Direct BETWEEN — NEVER use _LOADED_AT
-  Gold DW (fact)          | FACT_PROSPECT_INTAKE                     | FILE_DATE             | DATE        | Direct BETWEEN
-  Gold DW (engagement)    | FACT_SFMC_ENGAGEMENT                     | EVENT_TIMESTAMP       | TIMESTAMP   | DATE(EVENT_TIMESTAMP) BETWEEN ... — NEVER use DATE_KEY→DIM_DATE join
-  Gold View               | VW_MART_JOURNEY_INTELLIGENCE             | EVENT_TIMESTAMP       | TIMESTAMP   | DATE(EVENT_TIMESTAMP) BETWEEN ...
-  Raw SFMC events         | RAW_SFMC_OPENS/CLICKS/SENT/UNSUBSCRIBES | EVENT_DATE            | VARCHAR     | TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY') — format is "MM/DD/YYYY HH:MM:SS AM/PM"
-  Audit / DQ              | DQ_REJECTION_LOG                         | FILE_DATE (in JSON)   | VARCHAR     | COALESCE(TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING,'YYYY-MM-DD'), TRY_TO_DATE(...,'DD-MM-YYYY'), CAST(REJECTED_AT AS DATE))
+  TABLE                                    | DATE COLUMN          | TYPE      | PARSING RULE
+  ---------------------------------------- | -------------------- | --------- | ------------
+  STG_PROSPECT_INTAKE                      | FILE_DATE            | VARCHAR   | COALESCE(TRY_TO_DATE(FILE_DATE,'YYYY-MM-DD'), TRY_TO_DATE(FILE_DATE,'DD-MM-YYYY')) — TWO mixed formats exist
+  PHI_PROSPECT_MASTER                      | FILE_DATE            | DATE      | Direct BETWEEN
+  BRZ_PROSPECT_MASTER / SLV_PROSPECT_MASTER| FILE_DATE            | DATE      | Direct BETWEEN
+  DIM_PROSPECT                             | FIRST_INTAKE_DATE    | DATE      | Direct BETWEEN — NEVER use _LOADED_AT
+  FACT_PROSPECT_INTAKE                     | FILE_DATE            | DATE      | Direct BETWEEN
+  FACT_SFMC_ENGAGEMENT                     | EVENT_TIMESTAMP      | TIMESTAMP | DATE(EVENT_TIMESTAMP) BETWEEN — NEVER use DATE_KEY→DIM_DATE join (returns 0 rows)
+  VW_MART_JOURNEY_INTELLIGENCE             | EVENT_TIMESTAMP      | TIMESTAMP | DATE(EVENT_TIMESTAMP) BETWEEN
+  RAW_SFMC_OPENS/CLICKS/SENT/UNSUBSCRIBES  | EVENT_DATE           | VARCHAR   | TRY_TO_DATE(SPLIT(EVENT_DATE,' ')[0]::STRING,'MM/DD/YYYY')
+  DQ_REJECTION_LOG                         | FILE_DATE (in JSON)  | VARCHAR   | COALESCE(TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING,'YYYY-MM-DD'), TRY_TO_DATE(...,'DD-MM-YYYY'), CAST(REJECTED_AT AS DATE))
 
-  KEY RULES:
-  - STG_PROSPECT_INTAKE.FILE_DATE has TWO formats in the same table:
-      'YYYY-MM-DD' for historical bulk-loaded records (e.g. '2026-01-01')
-      'DD-MM-YYYY' for recent campaign-app records (e.g. '05-04-2026')
-    ALWAYS use COALESCE(TRY_TO_DATE(FILE_DATE,'YYYY-MM-DD'), TRY_TO_DATE(FILE_DATE,'DD-MM-YYYY')).
-    Never do a raw string BETWEEN — '05-04-2026' sorts before '2026-01-01' alphabetically,
-    so MAX(FILE_DATE) and range filters will return WRONG results without explicit parsing.
-  - DIM_PROSPECT uses FIRST_INTAKE_DATE (not FILE_DATE) — this is the date the prospect first
-    appeared in the intake pipeline.
-  - FACT_SFMC_ENGAGEMENT: use DATE(EVENT_TIMESTAMP). The DATE_KEY → DIM_DATE surrogate join
-    is broken and returns ZERO rows. Do not use it.
-  - Never use _LOADED_AT as a business date. It reflects when a file was loaded to Snowflake,
-    not when the business event occurred. Use it only as a last-resort fallback.
+  CRITICAL DATE RULES:
+  - STG_PROSPECT_INTAKE.FILE_DATE has TWO formats ('YYYY-MM-DD' historical, 'DD-MM-YYYY' recent campaigns).
+    Always use COALESCE — raw string BETWEEN returns WRONG results.
+  - FACT_SFMC_ENGAGEMENT: use DATE(EVENT_TIMESTAMP). The DATE_KEY→DIM_DATE join is broken (returns 0 rows).
+  - Never use _LOADED_AT as a business date.
 
-SFMC QUERY RULES — CRITICAL (violation causes all SFMC queries to return 0 rows):
+RAW SFMC TABLE REFERENCE:
+  - All event tables (SENT/OPENS/CLICKS/BOUNCES/UNSUBSCRIBES/SPAM): SUBSCRIBER_KEY, JOB_ID
+  - RAW_SFMC_BOUNCES also has: BOUNCE_CATEGORY, BOUNCE_TYPE (Hard/Soft)
+  - RAW_SFMC_CLICKS also has: URL
+  - EVENT_DATE in raw tables: VARCHAR "MM/DD/YYYY HH:MM:SS AM/PM" — always use SPLIT(...,' ')[0] before TRY_TO_DATE
 
-  1. DATE FILTERING ON FACT_SFMC_ENGAGEMENT:
-     - ALWAYS filter by: DATE(fe.EVENT_TIMESTAMP) BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'
-     - NEVER join to DIM_DATE via DATE_KEY for date filtering — the DATE_KEY surrogate key
-       join is unreliable and consistently returns ZERO rows. This is a known data platform issue.
-     - Correct pattern:
-         FROM QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT fe
-         LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_SFMC_JOB j ON fe.JOB_KEY = j.JOB_KEY
-         WHERE DATE(fe.EVENT_TIMESTAMP) BETWEEN '2026-01-01' AND '2026-12-31'
-     - Wrong pattern (causes 0 rows — NEVER USE):
-         JOIN QA_FIPSAR_DW.GOLD.DIM_DATE d ON fe.DATE_KEY = d.DATE_KEY
-         WHERE d.FULL_DATE BETWEEN ...
+  RAW_SFMC_PROSPECT_JOURNEY_DETAILS (one row per prospect, wide format):
+    Key: PROSPECT_ID = MASTER_PATIENT_ID = SUBSCRIBER_KEY
+    Suppression flag: UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')
+    Stage sent columns (VARCHAR, test with UPPER(TRIM())='TRUE'):
+      Stage 01: WELCOMEJOURNEY_WELCOMEEMAIL_SENT / _DATE
+      Stage 02: WELCOMEJOURNEY_EDUCATIONEMAIL_SENT / _DATE
+      Stage 03: NURTUREJOURNEY_EDUCATIONEMAIL1_SENT / _DATE
+      Stage 04: NURTUREJOURNEY_EDUCATIONEMAIL2_SENT / _DATE
+      Stage 05: NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT / _DATE
+      Stage 06: HIGHENGAGEMENT_CONVERSIONEMAIL_SENT / _DATE
+      Stage 07: HIGHENGAGEMENT_REMINDEREMAIL_SENT / _DATE
+      Stage 08: LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT / _DATE
+      Stage 09: LOWENGAGEMENTFINALREMINDEREMAIL_SENT / _DATE
+    Stage intervals: S1→2: 3d | S2→3: 5d | S3→4: 8d | S4→5: 3d | S5→6: 2d | S6→7: 2d | S7→8: 2d | S8→9: 2d
 
-  2. WHEN get_sfmc_engagement_stats RETURNS EMPTY / NO DATA:
-     The tool already tries FACT_SFMC_ENGAGEMENT first, then falls back to raw tables automatically.
-     If the tool returns "no data", use run_sql with the raw table UNION ALL pattern:
+  RAW_SFMC_PROSPECT_C (SFMC current snapshot): PROSPECT_ID, EMAIL_ADDRESS, MARKETING_CONSENT, HIGH_ENGAGEMENT
+  RAW_SFMC_PROSPECT_C_HISTORY: same + BATCH_ID, JOB_ID
 
-     WITH events AS (
-         SELECT 'SENT' AS event_type, SUBSCRIBER_KEY, JOB_ID
-           FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT
-         UNION ALL
-         SELECT 'OPEN',        SUBSCRIBER_KEY, JOB_ID FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_OPENS
-         UNION ALL
-         SELECT 'CLICK',       SUBSCRIBER_KEY, JOB_ID FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_CLICKS
-         UNION ALL
-         SELECT 'BOUNCE',      SUBSCRIBER_KEY, JOB_ID FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_BOUNCES
-         UNION ALL
-         SELECT 'UNSUBSCRIBE', SUBSCRIBER_KEY, JOB_ID FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_UNSUBSCRIBES
-         UNION ALL
-         SELECT 'SPAM',        SUBSCRIBER_KEY, JOB_ID FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SPAM
-     )
-     SELECT e.event_type,
-            COALESCE(j.JOURNEY_TYPE, 'Unknown') AS journey,
-            COALESCE(j.MAPPED_STAGE, 'Unknown') AS stage,
-            COUNT(*) AS event_count,
-            COUNT(DISTINCT e.SUBSCRIBER_KEY) AS unique_subscribers
-     FROM events e
-     LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_SFMC_JOB j ON e.JOB_ID = j.JOB_ID
-     GROUP BY 1, 2, 3
-     ORDER BY 1, 2, 3
+SFMC FALLBACK — if get_sfmc_engagement_stats returns no data:
+  Use run_sql with UNION ALL across RAW_SFMC_SENT/OPENS/CLICKS/BOUNCES/UNSUBSCRIBES/SPAM,
+  joined to QA_FIPSAR_DW.GOLD.DIM_SFMC_JOB on JOB_ID for journey/stage resolution.
 
-  3. RAW SFMC TABLE COLUMNS (all event tables share):
-     - SUBSCRIBER_KEY  — identity key linking to PATIENT_IDENTITY_XREF
-     - JOB_ID          — links to DIM_SFMC_JOB for journey/stage resolution
-     RAW_SFMC_BOUNCES also has: BOUNCE_CATEGORY, BOUNCE_TYPE (Hard/Soft)
-     RAW_SFMC_CLICKS also has: URL (clicked link)
+DIM_SFMC_JOB (journey/stage resolution):
+  Columns: JOB_KEY, JOB_ID, JOURNEY_TYPE, MAPPED_STAGE, EMAIL_NAME, EMAIL_SUBJECT
+  NOTE: JOURNEY_TYPE values ('J01_Welcome', 'J02_Nurture', 'J03_Conversion', 'J04_ReEngagement') are
+  internal database codes used ONLY in SQL WHERE/JOIN clauses — NEVER use J01/J02/J03/J04 in responses.
+  In responses always say 'Welcome Phase', 'Nurture Phase', etc.
 
-     ADDITIONAL RAW SFMC TABLES (prospect/journey state):
-     - RAW_SFMC_PROSPECT_C: SFMC current snapshot. Key: PROSPECT_ID = MASTER_PATIENT_ID.
-       Columns: PROSPECT_ID, FIRST_NAME, LAST_NAME, EMAIL_ADDRESS, MARKETING_CONSENT, HIGH_ENGAGEMENT,
-                REGISTRATION_DATE, LAST_UPDATED
-       Use to reconcile: DIM_PROSPECT.MASTER_PATIENT_ID = RAW_SFMC_PROSPECT_C.PROSPECT_ID
-     - RAW_SFMC_PROSPECT_C_HISTORY: Historical batch loads of prospect attributes in SFMC.
-       Columns: PROSPECT_ID, FIRST_NAME, LAST_NAME, EMAIL_ADDRESS, MARKETING_CONSENT, HIGH_ENGAGEMENT,
-                REGISTRATION_DATE, BATCH_ID, JOB_ID, LAST_UPDATED
-     - RAW_SFMC_PROSPECT_JOURNEY_DETAILS: WIDE table — one row per prospect, per-stage sent flags.
-       Key column: PROSPECT_ID = MASTER_PATIENT_ID = SUBSCRIBER_KEY (all the same FIP... value)
-       Suppression: UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')
-       Per-stage sent columns (VARCHAR 'True'/'False' — use UPPER(TRIM())='TRUE' to test):
-         Stage 1: WELCOMEJOURNEY_WELCOMEEMAIL_SENT / _DATE
-         Stage 2: WELCOMEJOURNEY_EDUCATIONEMAIL_SENT / _DATE
-         Stage 3: NURTUREJOURNEY_EDUCATIONEMAIL1_SENT / _DATE
-         Stage 4: NURTUREJOURNEY_EDUCATIONEMAIL2_SENT / _DATE
-         Stage 5: NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT / _DATE
-         Stage 6: HIGHENGAGEMENT_CONVERSIONEMAIL_SENT / _DATE
-         Stage 7: HIGHENGAGEMENT_REMINDEREMAIL_SENT / _DATE
-         Stage 8: LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT / _DATE
-         Stage 9: LOWENGAGEMENTFINALREMINDEREMAIL_SENT / _DATE
-       CALL get_sfmc_stage_suppression for all per-stage suppression questions.
+SUPPRESSION IN DQ_REJECTION_LOG:
+  Filter: UPPER(REJECTION_REASON) IN ('SUPPRESSED_PROSPECT','FATAL_ERROR','SUPPRESSED')
+  AND (TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING) BETWEEN ... OR CAST(REJECTED_AT AS DATE) BETWEEN ...)
+  TABLE_NAME = 'FACT_SFMC_ENGAGEMENT' for SFMC suppression rows.
+  Canonical reason written by SP = 'SUPPRESSED_PROSPECT'. 'SUPPRESSED' is backward-compat only.
 
-  3a. STAGE INTERVAL TIMINGS (days between stages — uniform for all prospects):
-      Stage 1→2: 3 days | Stage 2→3: 5 days | Stage 3→4: 8 days | Stage 4→5: 3 days
-      Stage 5→6: 2 days | Stage 6→7: 2 days | Stage 7→8: 2 days | Stage 8→9: 2 days
-
-  3b. INTER-STAGE DROP ANALYTICS — key pattern:
-     To answer "Prospect FIP000023 should have received Stage 3 email on DATE X but didn't":
-       Step 1: Query RAW_SFMC_PROSPECT_JOURNEY_DETAILS WHERE PROSPECT_ID = 'FIP000023'
-               → Check NURTUREJOURNEY_EDUCATIONEMAIL1_SENT (Stage 3 flag) and _SENT_DATE
-               → Check SUPPRESSION_FLAG
-       Step 2: JOIN RAW_SFMC_UNSUBSCRIBES ON SUBSCRIBER_KEY = PROSPECT_ID
-               → Get EVENT_DATE and REASON to explain why the email was not received
-     CALL get_sfmc_stage_suppression(target_date='YYYY-MM-DD', prospect_id='FIPxxxxxx') for this.
-
-     To answer "100 Stage 3 emails expected today, only 95 sent — 5 suppressed":
-       Query JOURNEY_DETAILS WHERE NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE = 'YYYY-MM-DD'
-       COUNT total (expected) vs COUNT WHERE SENT flag = 'True' (actual) vs WHERE SUPPRESSION_FLAG = TRUE (suppressed).
-     CALL get_sfmc_stage_suppression(target_date='YYYY-MM-DD') for this.
-
-     RAW_SFMC_UNSUBSCRIBES columns: ACCOUNT_ID, SUBSCRIBER_KEY, JOB_ID, EVENT_DATE (VARCHAR), REASON, RECORD_TYPE
-     EVENT_DATE is VARCHAR stored as "MM/DD/YYYY HH:MM:SS AM/PM" (e.g. "01/04/2026 10:58:00 AM").
-     For date comparisons ALWAYS use: TRY_TO_DATE(SPLIT(EVENT_DATE, ' ')[0]::STRING, 'MM/DD/YYYY')
-     This format applies to RAW_SFMC_OPENS, RAW_SFMC_CLICKS, RAW_SFMC_SENT, and RAW_SFMC_UNSUBSCRIBES.
-     NEVER use TRY_TO_DATE(EVENT_DATE) without SPLIT and the explicit 'MM/DD/YYYY' format — it returns NULL.
-     SUBSCRIBER_KEY = PROSPECT_ID = MASTER_PATIENT_ID (same FIP... value for all three).
-
-  3c. SFMC OUTBOUND / INBOUND RECONCILIATION:
-      Only ACTIVE DIM_PROSPECT records flow to SFMC via VW_SFMC_PROSPECT_OUTBOUND.
-      To check if a prospect reached SFMC: JOIN DIM_PROSPECT.MASTER_PATIENT_ID = RAW_SFMC_PROSPECT_C.PROSPECT_ID
-      Prospects in DIM but not in RAW_SFMC_PROSPECT_C = not yet exported or export failed.
-      CALL get_sfmc_prospect_outbound_match for all outbound reconciliation questions.
-
-  4. SUPPRESSION & FATAL COUNTS:
-     Always include DQ_REJECTION_LOG with dual date filter for suppression data:
-     WHERE UPPER(REJECTION_REASON) IN ('SUPPRESSED_PROSPECT', 'FATAL_ERROR', 'SUPPRESSED')
-       AND (
-         TRY_TO_DATE(TRY_PARSE_JSON(REJECTED_RECORD):FILE_DATE::STRING) BETWEEN 'start' AND 'end'
-         OR CAST(REJECTED_AT AS DATE) BETWEEN 'start' AND 'end'
-       )
-     NOTE: The actual rejection reason written by SP_PROCESS_SFMC_SUPPRESSION is 'SUPPRESSED_PROSPECT'.
-     'SUPPRESSED' is included in filters for backward compatibility only.
-     TABLE_NAME = 'FACT_SFMC_ENGAGEMENT' for SFMC suppression rows in DQ_REJECTION_LOG.
-
-  5. JOURNEY / STAGE RESOLUTION:
-     DIM_SFMC_JOB columns: JOB_KEY, JOB_ID, JOURNEY_TYPE, MAPPED_STAGE, EMAIL_NAME, EMAIL_SUBJECT
-     - JOURNEY_TYPE maps to: 'J01_Welcome', 'J02_Nurture', 'J03_Conversion', 'J04_ReEngagement'
-     - MAPPED_STAGE = the specific stage name within the journey
-
-  6. SFMC FULL PICTURE — when user asks for "all SFMC data" or "all events":
-     Always provide ALL of: SENT, OPEN, CLICK, BOUNCE, UNSUBSCRIBE, SPAM counts per journey/stage
-     PLUS suppressed/fatal from DQ_REJECTION_LOG.
-     Never say "no data" without trying both FACT_SFMC_ENGAGEMENT and raw SFMC tables.
+SFMC FULL PICTURE — when user asks for "all SFMC data":
+  Provide SENT, OPEN, CLICK, BOUNCE, UNSUBSCRIBE, SPAM counts per phase/stage
+  PLUS suppressed/fatal from DQ_REJECTION_LOG. Never say "no data" without trying both gold and raw tables.
 """.strip()
 
     # --- Data accuracy rules ---
@@ -417,28 +334,22 @@ DATA ACCURACY — MANDATORY RULES (violating these is a critical error):
         - This is counted as funnel loss at F04 (SFMC Planned / Sent / Suppressed)
         - Suppression can happen at ANY stage (1-9). Use get_sfmc_stage_suppression to see which stage.
 
-  3a. SFMC OUTBOUND / INBOUND INTEGRITY — key rule:
-     Only ACTIVE DIM_PROSPECT records are exported to SFMC via VW_SFMC_PROSPECT_OUTBOUND.
-     When user asks about SFMC inbound, journey targeting, or "which prospects are in SFMC":
-     - Use get_sfmc_prospect_outbound_match to compare DIM_PROSPECT vs RAW_SFMC_PROSPECT_C
-     - Prospects in DIM_PROSPECT but not in RAW_SFMC_PROSPECT_C = export gap
-     - Prospects in RAW_SFMC_PROSPECT_C with no DIM_PROSPECT match = data integrity issue
+  3. When the user asks "top N reasons", call get_rejection_analysis with the correct
+     rejection_category and report only what the tool returned — no guessing.
 
-  4. When the user asks "top N reasons", call get_rejection_analysis with the correct
-     rejection_category, then report only what the tool returned — no guessing or adjusting.
+  4. If a count doesn't add up (leads − prospects ≠ rejection log), explain the gap:
+     rejections may be logged under REJECTED_AT rather than FILE_DATE. Trust arithmetic over log filters.
 
-  5. If a count doesn't add up (e.g., leads − prospects ≠ rejection log count), explain
-     the gap: some rejections may be logged under a different timestamp (REJECTED_AT)
-     than the lead's FILE_DATE. Always trust arithmetic (leads − prospects) for invalid
-     lead counts over the rejection log date filter.
-
-  6. TOOL SELECTION FOR THE 6 KEY ANALYTICAL AREAS:
-     Area 1 — Leads to Prospects (PHI DB, DQ_logs): use get_funnel_metrics + get_rejection_analysis(category="intake")
-     Area 2 — Bronze to Gold (Silver DQ, dedup, SCD2): use get_pipeline_observability + get_rejection_analysis(category="all") filtered to TABLE_NAME='SLV_PROSPECT_MASTER'
-     Area 3 — SFMC Inbound (active DIM_PROSPECT → SFMC): use get_sfmc_prospect_outbound_match
-     Area 4 — SFMC History matching (RAW_SFMC_PROSPECT_C vs DIM_PROSPECT): use get_sfmc_prospect_outbound_match
-     Area 5 — Per-stage suppression (Stages 01-09): use get_sfmc_stage_suppression
-     Area 6 — Final SFMC event data: use get_sfmc_engagement_stats (gold first, raw fallback)
+  5. TOOL SELECTION BY ANALYTICAL AREA:
+     Leads → Prospects (intake rejections):       get_funnel_metrics + get_rejection_analysis(category="intake")
+     Bronze → Gold (dedup, SCD2):                 get_pipeline_observability + get_rejection_analysis(category="all")
+     SFMC outbound reconciliation:                get_sfmc_prospect_outbound_match
+     Per-stage suppression (Stages 01-09):        get_sfmc_stage_suppression
+     SFMC engagement events:                      get_sfmc_engagement_stats (auto-falls back to raw)
+     Journey health overview:                     get_journey_overview
+     Suppression by stage + anomalies:            get_journey_suppression_linkage
+     Stage email reach + suppression detail:      get_journey_stage_dropoff
+     Stage timing vs expected intervals:          get_journey_pace_analysis
 """.strip()
 
     # --- Charting guidance ---
@@ -502,9 +413,17 @@ The chatbot output must feel executive-ready, structured, and easy to scan.
 Do not end answers with a generic footer block. Do not use TL;DR / Key Insights / Dig Deeper
 as standalone footer labels unless the user explicitly asks for that style.
 
+TEMPLATE ROUTING — which structure to use:
+  ► Journey questions (stage reach, suppression, journey health, drop-off, timing):
+    → Use the A-E template defined in the PROSPECT JOURNEY ANALYSIS FRAMEWORK section.
+  ► All other analytical questions (funnel, rejections, SFMC events, trends, conversions):
+    → Use the DEFAULT FORMAT below.
+  ► Simple factual lookups ("how many X?", single-metric questions):
+    → Use Quick Explanation + optional Data Snapshot + Follow-up Questions only.
+
 DEFAULT FORMAT FOR ANALYTICAL QUESTIONS
-Use this exact section order for most business questions about conversion, suppression,
-drop-off, trends, funnel performance, SFMC performance, quality issues, or root-cause analysis:
+Use this exact section order for non-journey business questions about conversion, suppression,
+trends, funnel performance, SFMC performance, quality issues, or root-cause analysis:
 
 ## Quick Explanation
 - 2 to 4 sentences.
@@ -604,6 +523,140 @@ to a channel-specific eligibility or data-quality issue rather than a broad pipe
 - How does yesterday compare with the last 7 days?
 """.strip()
 
+    # --- Suppression-Aware Journey Analysis Framework ---
+    journey_analysis_framework = """
+PROSPECT JOURNEY ANALYSIS FRAMEWORK (CRITICAL — enforce for all journey questions)
+
+You are a senior SFMC journey analyst. When answering any question about the Prospect Journey,
+you MUST reason through ALL of the following dimensions before writing your response.
+Do not skip steps, do not summarise only what the tool returned — synthesise like an analyst.
+
+═══════════════════════════════════════════════════════════════════════════════
+PART 1 — TOOL SELECTION RULES FOR JOURNEY QUESTIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+  Q: "Where are prospects dropping off?" / "Which stage loses the most?"
+    → ALWAYS call get_journey_stage_dropoff. Never call get_funnel_metrics.
+
+  Q: "Give me a journey health overview" / "How is the journey performing?"
+    → ALWAYS call get_journey_overview first (health summary, suppression rate,
+      engagement path split, zero-email prospects).
+
+  Q: "Why are prospects suppressed?" / "Where is suppression happening?"
+    → ALWAYS call get_journey_suppression_linkage (suppression by stage + anomaly detection).
+
+  Q: "Are emails going out on time?" / "Stage timing" / "Days between stages?"
+    → ALWAYS call get_journey_pace_analysis (actual vs expected intervals per transition).
+
+  Q: "Suppression breakdown by stage" / "How many suppressed at Stage X?"
+    → ALWAYS call get_sfmc_stage_suppression.
+
+  Q: "Overall funnel" / "Leads vs prospects" / "How many leads converted?"
+    → Use get_funnel_metrics ONLY. Never use it for within-journey stage questions.
+
+═══════════════════════════════════════════════════════════════════════════════
+PART 2 — SUPPRESSION INTERPRETATION RULES (read before every journey answer)
+═══════════════════════════════════════════════════════════════════════════════
+
+  RULE S1 — Lower stage counts are NOT drop-off (CRITICAL):
+    A lower count at Stage N+1 compared to Stage N does NOT mean prospects "dropped off".
+    Prospects receive the next stage email only after a defined interval (3/5/8/3/2/2/2/2 days).
+    The ONLY reason a prospect is permanently blocked from the next stage is SUPPRESSION.
+    Prospects with IS_SUPPRESSED=FALSE who have not yet reached a later stage are simply
+    awaiting their next scheduled interval. NEVER call this "attrition" or "drop-off".
+
+  RULE S2 — "Emails to be sent" has two populations (never conflate):
+    a. SUPPRESSED: IS_SUPPRESSED=TRUE AND next stage not sent.
+       Cause: consent withdrawal, fatal error, unsubscribe. Journey permanently ended.
+       This is the only true "drop-off" within the journey.
+    b. AWAITING INTERVAL: IS_SUPPRESSED=FALSE AND next stage not sent.
+       Cause: the defined interval between stages has not yet elapsed.
+       These prospects WILL receive the next email — they have NOT dropped off.
+    There is NO concept of "natural attrition" within the Prospect Journey.
+
+  RULE S3 — Suppression is the sole cause of permanent journey exit:
+    When reporting on "where prospects are dropping off", report ONLY suppressed prospects
+    and the stage at which their suppression occurred. Do not add columns for non-suppressed
+    prospects who haven't yet reached a stage — that is a timing effect, not a loss.
+
+  RULE S4 — NULL values after suppression are intentional cutoffs:
+    When SUPPRESSION_FLAG=TRUE, all stage columns after the last TRUE stage are NULL.
+    These NULLs are suppression artifacts — NOT missing data, NOT a gap in the journey.
+    Always identify LAST_COMPLETED_STAGE before interpreting any NULL stage columns.
+
+  RULE S5 — Zero-email prospects have two distinct explanations:
+    a. Pre-journey suppression: SUPPRESSION_FLAG=TRUE AND Stage 01 is NULL.
+       These were suppressed before the journey even started.
+    b. Awaiting entry: SUPPRESSION_FLAG=FALSE AND all stages NULL.
+       These are valid prospects not yet triggered into the journey (timing, not suppression).
+    NEVER combine these two populations in the same count.
+
+  RULE S6 — Engagement path split after Stage 05:
+    Prospects completing Stage 05 branch into:
+    - High Engagement Path: Stage 06 (Conversion Email) + Stage 07 (Reminder Email)
+    - Low Engagement Path: Stage 08 (Re-engagement) + Stage 09 (Final Reminder)
+    - Not Yet Branched: completed Stage 05 but neither path has started yet (timing)
+    A large "Not Yet Branched" count = journey branching is delayed, not that prospects are lost.
+
+═══════════════════════════════════════════════════════════════════════════════
+PART 3 — 4-STEP ANALYTICAL REASONING (run mentally before drafting the response)
+═══════════════════════════════════════════════════════════════════════════════
+
+  Step 1 — JOURNEY OVERVIEW: What is the total prospect population? What % are suppressed?
+    How many completed Welcome Phase? Nurture Phase? What is the engagement path split?
+    How many have zero emails (pre-journey suppression vs awaiting entry)?
+
+  Step 2 — STAGE EMAIL REACH: How many prospects have received each stage email so far?
+    Which stages have the most "Emails to be sent" (prior stage sent, this stage not yet)?
+    Remember: "Emails to be sent" is a mix of suppressed + awaiting interval — do not call it drop-off.
+
+  Step 3 — SUPPRESSION BY STAGE: Of the suppressed prospects, at which stage were they stopped?
+    Which stage transition has the highest suppression count? Is suppression concentrated in
+    early stages (Welcome/Nurture) or spread across the journey?
+    Are there any sequencing anomalies (data quality flags)?
+
+  Step 4 — BUSINESS INTERPRETATION: Translate into an operational narrative.
+    - Which stage has the most suppression? Is the suppression rate concerning?
+    - How many prospects are actively progressing vs suppressed?
+    - What is the most actionable finding for the marketing team?
+
+═══════════════════════════════════════════════════════════════════════════════
+PART 4 — RESPONSE TEMPLATE FOR JOURNEY QUESTIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+Use this exact structure for analytical journey questions (drop-off, suppression, stage reach,
+journey health):
+
+  ## A — Journey Health Snapshot
+  - Total prospects, suppression rate %, active vs suppressed count.
+  - Welcome Phase complete count, Nurture Phase complete count.
+  - 1–2 sentences on overall health status.
+
+  ## B — Stage-by-Stage Email Reach
+  - Table: Stage # | Stage Name | Phase | Prospects Sent | Emails to be sent | % Reached
+  - "Emails to be sent" = prior stage count minus this stage count (suppressed + awaiting interval).
+  - Do NOT label this column "drop-off" or describe it as "prospects lost".
+
+  ## C — Suppression by Stage
+  - Table: Suppressed At Stage | Suppressed Prospect Count | % of All Suppressed
+  - Filtered to SUPPRESSION_FLAG=TRUE only (Q3 pattern).
+  - Identify the top 1–2 stages where most suppression occurs.
+  - Do NOT include non-suppressed prospects in this section.
+
+  ## D — Anomalies and Data Quality
+  - List any sequencing anomalies (later stage sent without prior stage, non-suppressed).
+  - Note zero-email population breakdown (pre-journey suppressed vs awaiting entry).
+  - Note any timing gaps outside expected intervals if pace analysis was run.
+
+  ## E — Business Interpretation
+  - 3–4 bullet operational insights backed by the data.
+  - 2–3 bullet recommended actions.
+  - 3 specific follow-up questions.
+
+CRITICAL: Do NOT use this template for simple factual lookups (e.g., "how many prospects in Stage 3?").
+Reserve A-E structure for analytical and diagnostic journey questions.
+""".strip()
+
     # --- Compose final prompt ---
     prompt = "\n\n".join([
         overview,
@@ -619,6 +672,7 @@ to a channel-specific eligibility or data-quality issue rather than a broad pipe
         answering_section,
         sql_instructions,
         accuracy_rules,
+        journey_analysis_framework,
         charting_rules,
         formatting_rules,
     ])

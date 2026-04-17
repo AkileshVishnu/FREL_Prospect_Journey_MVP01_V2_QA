@@ -4,12 +4,16 @@ tools.py
 LangChain tools that the conversational agent can call to retrieve
 live data from Snowflake.  Every tool is read-only.
 
-DATA TOOLS (13):
+DATA TOOLS (14):
   1.  run_sql                       — Execute any agent-generated SELECT statement.
-  2.  get_funnel_metrics            — Full F01-F07 funnel counts for a date range.
+  2.  get_funnel_metrics            — Full F01-F07 funnel counts (lead→prospect→SFMC level ONLY).
   3.  get_rejection_analysis        — Who was rejected, why, and when.
   4.  get_sfmc_engagement_stats     — Sent/Open/Click/Bounce summary per journey/stage.
   5.  get_drop_analysis             — Diagnose volume drop on a specific date.
+  NEW get_journey_stage_dropoff     — Stage 01–09 progression: sent counts, drop-off, suppression breakdown.
+  NEW get_journey_overview          — Journey health: suppression rate, phase completions, engagement path split.
+  NEW get_journey_suppression_linkage — Suppression by stage (Q3 pattern): where suppressed prospects stopped + anomaly detection.
+  NEW get_journey_pace_analysis     — Avg days between stage transitions vs expected business intervals.
   6.  trace_prospect                — Trace a prospect end-to-end by email or ID.
   7.  get_ai_intelligence           — Schema-safe AI table discovery + sample data.
   8.  get_prospect_conversion_analysis — Engagement-derived conversion & drop-off scores.
@@ -56,10 +60,23 @@ def _run(sql: str, max_rows: int = 100) -> str:
     return execute_query_as_string(sql.strip(), max_rows=max_rows)
 
 
+# Prospect Journey — 9 stages, 1 journey.
+# Stage names use business-friendly labels (no journey code suffixes).
+# Physical columns remain unchanged — only presentation names updated.
 _SFMC_STAGE_CONFIG = [
     {
+        "stage_order": 1,
+        "stage_name": "Stage 01 — Welcome Email",
+        "phase": "Welcome Phase",
+        "prev_stage_date_col": None,  # Stage 01 has no predecessor
+        "curr_stage_sent_col": "WELCOMEJOURNEY_WELCOMEEMAIL_SENT",
+        "curr_stage_date_col": "WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE",
+        "interval_days": None,
+    },
+    {
         "stage_order": 2,
-        "stage_name": "Stage 2 - Education Email (J01)",
+        "stage_name": "Stage 02 — Education Email",
+        "phase": "Welcome Phase",
         "prev_stage_date_col": "WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE",
         "curr_stage_sent_col": "WELCOMEJOURNEY_EDUCATIONEMAIL_SENT",
         "curr_stage_date_col": "WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE",
@@ -67,7 +84,8 @@ _SFMC_STAGE_CONFIG = [
     },
     {
         "stage_order": 3,
-        "stage_name": "Stage 3 - Nurture Education Email 1 (J02)",
+        "stage_name": "Stage 03 — Education Email 1",
+        "phase": "Nurture Phase",
         "prev_stage_date_col": "WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE",
         "curr_stage_sent_col": "NURTUREJOURNEY_EDUCATIONEMAIL1_SENT",
         "curr_stage_date_col": "NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE",
@@ -75,7 +93,8 @@ _SFMC_STAGE_CONFIG = [
     },
     {
         "stage_order": 4,
-        "stage_name": "Stage 4 - Nurture Education Email 2 (J02)",
+        "stage_name": "Stage 04 — Education Email 2",
+        "phase": "Nurture Phase",
         "prev_stage_date_col": "NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE",
         "curr_stage_sent_col": "NURTUREJOURNEY_EDUCATIONEMAIL2_SENT",
         "curr_stage_date_col": "NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE",
@@ -83,7 +102,8 @@ _SFMC_STAGE_CONFIG = [
     },
     {
         "stage_order": 5,
-        "stage_name": "Stage 5 - Prospect Story Email (J02)",
+        "stage_name": "Stage 05 — Prospect Story Email",
+        "phase": "Nurture Phase",
         "prev_stage_date_col": "NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE",
         "curr_stage_sent_col": "NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT",
         "curr_stage_date_col": "NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE",
@@ -91,7 +111,8 @@ _SFMC_STAGE_CONFIG = [
     },
     {
         "stage_order": 6,
-        "stage_name": "Stage 6 - Conversion Email (J03)",
+        "stage_name": "Stage 06 — Conversion Email",
+        "phase": "High Engagement Phase",
         "prev_stage_date_col": "NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE",
         "curr_stage_sent_col": "HIGHENGAGEMENT_CONVERSIONEMAIL_SENT",
         "curr_stage_date_col": "HIGHENGAGEMENT_CONVERSIONEMAIL_SENT_DATE",
@@ -99,7 +120,8 @@ _SFMC_STAGE_CONFIG = [
     },
     {
         "stage_order": 7,
-        "stage_name": "Stage 7 - Reminder Email (J03)",
+        "stage_name": "Stage 07 — Reminder Email",
+        "phase": "High Engagement Phase",
         "prev_stage_date_col": "HIGHENGAGEMENT_CONVERSIONEMAIL_SENT_DATE",
         "curr_stage_sent_col": "HIGHENGAGEMENT_REMINDEREMAIL_SENT",
         "curr_stage_date_col": "HIGHENGAGEMENT_REMINDEREMAIL_SENT_DATE",
@@ -107,7 +129,8 @@ _SFMC_STAGE_CONFIG = [
     },
     {
         "stage_order": 8,
-        "stage_name": "Stage 8 - Re-engagement Email (J04)",
+        "stage_name": "Stage 08 — Re-engagement Email",
+        "phase": "Low Engagement Phase",
         "prev_stage_date_col": "HIGHENGAGEMENT_REMINDEREMAIL_SENT_DATE",
         "curr_stage_sent_col": "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT",
         "curr_stage_date_col": "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT_DATE",
@@ -115,7 +138,8 @@ _SFMC_STAGE_CONFIG = [
     },
     {
         "stage_order": 9,
-        "stage_name": "Stage 9 - Final Reminder Email (J04)",
+        "stage_name": "Stage 09 — Final Reminder Email",
+        "phase": "Low Engagement Phase",
         "prev_stage_date_col": "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT_DATE",
         "curr_stage_sent_col": "LOWENGAGEMENTFINALREMINDEREMAIL_SENT",
         "curr_stage_date_col": "LOWENGAGEMENTFINALREMINDEREMAIL_SENT_DATE",
@@ -175,12 +199,16 @@ def _fetch_sfmc_journey_detail_df(prospect_id: Optional[str] = None) -> pd.DataF
 
 def _compute_sfmc_stage_expectations(df: pd.DataFrame, target_date: str) -> tuple[list[dict], list[dict]]:
     """
-    Unit-style examples:
-    1. Stage 2 expected: Stage 1 date = 2026-04-07 and target_date = 2026-04-10 => expected for Stage 2.
-    2. expected + sent: Stage 2 expected on 2026-04-10 and Stage 2 sent date = 2026-04-10 => expected_and_sent.
-    3. expected + suppressed: Stage 3 expected on 2026-04-10, Stage 3 sent = False, SUPPRESSION_FLAG = True => expected_and_suppressed.
-    4. expected + unsent: Stage 5 expected on 2026-04-10, Stage 5 sent = False, SUPPRESSION_FLAG = False => expected_but_not_sent.
-    5. not expected: previous stage date missing or interval date != target_date => not_expected.
+    Prospect Journey — 9 stages, stage-aware suppression logic.
+
+    Classification rules per prospect per stage:
+    1. Stage 01 has no predecessor — expected if curr_stage_sent_date == target_date.
+    2. Stages 02–09: expected if prev_stage_date + interval_days == target_date.
+    3. expected_and_sent:       expected AND curr_sent_flag=True AND curr_sent_date==target
+    4. expected_and_suppressed: expected AND SUPPRESSION_FLAG=True AND not sent
+       (NULL stage values after suppression point are intentional cutoffs, not missing data)
+    5. expected_but_not_sent:   expected AND not sent AND not suppressed
+    6. not_expected:            previous stage date missing or interval date != target_date
     """
     target = pd.to_datetime(target_date).date()
     stage_rows: list[dict] = []
@@ -193,31 +221,48 @@ def _compute_sfmc_stage_expectations(df: pd.DataFrame, target_date: str) -> tupl
         not_sent_count = 0
 
         for row in df.to_dict(orient="records"):
-            previous_date = _sfmc_date(row.get(cfg["prev_stage_date_col"]))
             current_sent_flag = _sfmc_bool(row.get(cfg["curr_stage_sent_col"]))
             current_sent_date = _sfmc_date(row.get(cfg["curr_stage_date_col"]))
             suppression_flag = _sfmc_bool(row.get("SUPPRESSION_FLAG"))
 
-            expected_date = previous_date + timedelta(days=cfg["interval_days"]) if previous_date else None
-            classification = "not_expected"
-
-            if expected_date == target:
-                expected_count += 1
-                if current_sent_flag and current_sent_date == target:
+            # Stage 01: no predecessor — directly check if sent on target date
+            if cfg["prev_stage_date_col"] is None:
+                if current_sent_date == target:
+                    expected_date = target
+                    expected_count += 1
                     sent_count += 1
                     classification = "expected_and_sent"
-                elif suppression_flag:
-                    suppressed_count += 1
-                    classification = "expected_and_suppressed"
                 else:
-                    not_sent_count += 1
-                    classification = "expected_but_not_sent"
+                    expected_date = None
+                    classification = "not_expected"
+            else:
+                previous_date = _sfmc_date(row.get(cfg["prev_stage_date_col"]))
+                expected_date = previous_date + timedelta(days=cfg["interval_days"]) if previous_date else None
+                classification = "not_expected"
+
+                if expected_date == target:
+                    expected_count += 1
+                    if current_sent_flag and current_sent_date == target:
+                        sent_count += 1
+                        classification = "expected_and_sent"
+                    elif suppression_flag:
+                        # NULL after suppression = intentional cutoff; count as suppressed
+                        suppressed_count += 1
+                        classification = "expected_and_suppressed"
+                    else:
+                        not_sent_count += 1
+                        classification = "expected_but_not_sent"
 
             drilldown_rows.append({
                 "prospect_id": row.get("PROSPECT_ID"),
                 "stage_order": cfg["stage_order"],
                 "stage_name": cfg["stage_name"],
-                "previous_stage_sent_date": previous_date.isoformat() if previous_date else None,
+                "phase": cfg.get("phase", ""),
+                "previous_stage_sent_date": (
+                    _sfmc_date(row.get(cfg["prev_stage_date_col"])).isoformat()
+                    if cfg["prev_stage_date_col"] and _sfmc_date(row.get(cfg["prev_stage_date_col"]))
+                    else None
+                ),
                 "expected_date": expected_date.isoformat() if expected_date else None,
                 "actual_current_stage_sent_date": current_sent_date.isoformat() if current_sent_date else None,
                 "suppression_flag": suppression_flag,
@@ -227,6 +272,7 @@ def _compute_sfmc_stage_expectations(df: pd.DataFrame, target_date: str) -> tupl
         stage_rows.append({
             "stage_order": cfg["stage_order"],
             "stage_name": cfg["stage_name"],
+            "phase": cfg.get("phase", ""),
             "expected_count": expected_count,
             "sent": sent_count,
             "suppressed": suppressed_count,
@@ -266,19 +312,33 @@ def run_sql(sql: str) -> str:
 @tool
 def get_funnel_metrics(start_date: str = "2020-01-01", end_date: str = "2099-12-31") -> str:
     """
-    Return a full lead-to-engagement funnel summary across all stages
-    (F01 Lead Intake → F02 Mastering → F03 Fact → F04 SFMC Sent/Suppressed
-    → F05 Delivered → F06 Engagement).
+    Return a full lead-to-engagement funnel summary across the TOP-LEVEL pipeline stages:
+    F01 Lead Intake → F02 Mastering (Valid Prospects) → F04 SFMC Sent/Suppressed
+    → F05 Delivered → F06 Engagement (Opens, Clicks).
 
-    Use this when the user asks about funnel performance, conversion rates,
-    overall volume, or where the biggest drop-offs are.
+    Use this when the user asks about:
+    - Overall funnel performance or conversion rates (with or without a date range)
+    - How many leads vs prospects vs SFMC sends
+    - Top-level pipeline volume
+    - "Why is there a volume drop?" / "What are top rejection reasons?" — with NO date specified
+      (call with default params to get all-data view, then the user can narrow to a date range)
+
+    When no date is specified by the user, call with defaults (start_date="2020-01-01",
+    end_date="2099-12-31") to return the full dataset — do NOT substitute today's date.
+
+    CRITICAL — DO NOT use this tool when the user asks about:
+    - "Where are prospects dropping off in the journey?"
+    - "Which stage has the biggest drop-off?"
+    - "Stage-by-stage suppression"
+    - Anything about Stage 01 through Stage 09 within the Prospect Journey
+    For those questions use get_journey_stage_dropoff instead.
 
     Args:
         start_date: Inclusive start date in YYYY-MM-DD format (default: no lower bound).
         end_date:   Inclusive end date in YYYY-MM-DD format (default: no upper bound).
 
     Returns:
-        Funnel stage metrics as a markdown table.
+        Top-level funnel stage metrics as a markdown table.
     """
     # STG_PROSPECT_INTAKE.FILE_DATE is VARCHAR with mixed formats:
     #   'YYYY-MM-DD' (bulk historical data) and 'DD-MM-YYYY' (recent campaign files).
@@ -688,17 +748,26 @@ def get_sfmc_engagement_stats(
 @tool
 def get_drop_analysis(target_date: str) -> str:
     """
-    Investigate why prospect or send volume dropped on a specific date.
+    Investigate why prospect or send volume dropped on a SPECIFIC date.
     Returns intake counts, rejection counts by reason, SFMC sent vs suppressed,
     and any pipeline errors logged on that date.
 
-    Use this when the user asks:
-    - "Why is there a drop on DATE X?"
-    - "What happened on DATE X?"
-    - "Why did we see fewer prospects on DATE X?"
+    ONLY call this tool when the user has explicitly mentioned a specific date
+    (e.g. 'yesterday', 'April 15', '2026-04-10') in their question.
+
+    DO NOT call this tool when:
+    - The user asks a general question with NO date mentioned (e.g. "why is volume down?",
+      "what are the top reasons for volume drop?") — use get_funnel_metrics instead.
+    - The user asks about a date range — use get_funnel_metrics with start_date/end_date.
+
+    Use this only for:
+    - "Why is there a drop on [SPECIFIC DATE]?"
+    - "What happened on [SPECIFIC DATE]?"
+    - "Why did we see fewer prospects on [SPECIFIC DATE]?"
 
     Args:
-        target_date: The date to investigate (YYYY-MM-DD).
+        target_date: The SPECIFIC date to investigate (YYYY-MM-DD). Must be provided
+                     by the user — never infer or default to today's date.
 
     Returns:
         Multi-signal drop diagnosis as markdown tables.
@@ -1421,7 +1490,7 @@ def get_sfmc_stage_suppression(
     # --- PART 1: Per-stage expected vs actual counts ---
     stage_summary_sql = textwrap.dedent(f"""
         SELECT
-            'Stage 1 — Welcome Email (J01)'         AS stage,
+            'Stage 01 — Welcome Email'               AS stage,
             COUNT(*)                                 AS total_prospects,
             SUM(CASE WHEN UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT)) = 'TRUE'    THEN 1 ELSE 0 END) AS sent,
             SUM(CASE WHEN UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT)) != 'TRUE'   THEN 1 ELSE 0 END) AS not_sent,
@@ -1429,56 +1498,56 @@ def get_sfmc_stage_suppression(
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 2 — Education Email (J01)', COUNT(*),
+        SELECT 'Stage 02 — Education Email', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')   THEN 1 ELSE 0 END)
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 3 — Nurture Edu Email 1 (J02)', COUNT(*),
+        SELECT 'Stage 03 — Education Email 1', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')    THEN 1 ELSE 0 END)
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 4 — Nurture Edu Email 2 (J02)', COUNT(*),
+        SELECT 'Stage 04 — Education Email 2', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')    THEN 1 ELSE 0 END)
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 5 — Prospect Story Email (J02)', COUNT(*),
+        SELECT 'Stage 05 — Prospect Story Email', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')       THEN 1 ELSE 0 END)
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 6 — Conversion Email (J03)', COUNT(*),
+        SELECT 'Stage 06 — Conversion Email', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')    THEN 1 ELSE 0 END)
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 7 — Reminder Email (J03)', COUNT(*),
+        SELECT 'Stage 07 — Reminder Email', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')  THEN 1 ELSE 0 END)
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 8 — Re-engagement Email (J04)', COUNT(*),
+        SELECT 'Stage 08 — Re-engagement Email', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')     THEN 1 ELSE 0 END)
         FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS jd
         WHERE 1=1 {prospect_filter}
         UNION ALL
-        SELECT 'Stage 9 — Final Reminder Email (J04)', COUNT(*),
+        SELECT 'Stage 09 — Final Reminder Email', COUNT(*),
             SUM(CASE WHEN UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT)) = 'TRUE'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT)) != 'TRUE' THEN 1 ELSE 0 END),
             SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')     THEN 1 ELSE 0 END)
@@ -1494,7 +1563,7 @@ def get_sfmc_stage_suppression(
                 WHERE 1=1 {prospect_filter}
             )
             SELECT * FROM (
-                SELECT 2 AS stage_order, 'Stage 2 - Education Email (J01)' AS stage,
+                SELECT 2 AS stage_order, 'Stage 02 — Education Email' AS stage,
                     COUNT(*) AS expected_count,
                     SUM(CASE WHEN UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END) AS sent,
@@ -1506,7 +1575,7 @@ def get_sfmc_stage_suppression(
                 WHERE UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT)) = 'TRUE'
                   AND DATEADD(DAY, 3, TRY_TO_DATE(WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE::STRING)) = '{target_date}'
                 UNION ALL
-                SELECT 3, 'Stage 3 - Nurture Edu Email 1 (J02)',
+                SELECT 3, 'Stage 03 — Education Email 1',
                     COUNT(*),
                     SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END),
@@ -1518,7 +1587,7 @@ def get_sfmc_stage_suppression(
                 WHERE UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) = 'TRUE'
                   AND DATEADD(DAY, 5, TRY_TO_DATE(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE::STRING)) = '{target_date}'
                 UNION ALL
-                SELECT 4, 'Stage 4 - Nurture Edu Email 2 (J02)',
+                SELECT 4, 'Stage 04 — Education Email 2',
                     COUNT(*),
                     SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END),
@@ -1530,7 +1599,7 @@ def get_sfmc_stage_suppression(
                 WHERE UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) = 'TRUE'
                   AND DATEADD(DAY, 8, TRY_TO_DATE(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE::STRING)) = '{target_date}'
                 UNION ALL
-                SELECT 5, 'Stage 5 - Prospect Story Email (J02)',
+                SELECT 5, 'Stage 05 — Prospect Story Email',
                     COUNT(*),
                     SUM(CASE WHEN UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END),
@@ -1542,7 +1611,7 @@ def get_sfmc_stage_suppression(
                 WHERE UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT)) = 'TRUE'
                   AND DATEADD(DAY, 3, TRY_TO_DATE(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE::STRING)) = '{target_date}'
                 UNION ALL
-                SELECT 6, 'Stage 6 - Conversion Email (J03)',
+                SELECT 6, 'Stage 06 — Conversion Email',
                     COUNT(*),
                     SUM(CASE WHEN UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END),
@@ -1554,7 +1623,7 @@ def get_sfmc_stage_suppression(
                 WHERE UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT)) = 'TRUE'
                   AND DATEADD(DAY, 2, TRY_TO_DATE(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE::STRING)) = '{target_date}'
                 UNION ALL
-                SELECT 7, 'Stage 7 - Reminder Email (J03)',
+                SELECT 7, 'Stage 07 — Reminder Email',
                     COUNT(*),
                     SUM(CASE WHEN UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(HIGHENGAGEMENT_REMINDEREMAIL_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END),
@@ -1566,7 +1635,7 @@ def get_sfmc_stage_suppression(
                 WHERE UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT)) = 'TRUE'
                   AND DATEADD(DAY, 2, TRY_TO_DATE(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT_DATE::STRING)) = '{target_date}'
                 UNION ALL
-                SELECT 8, 'Stage 8 - Re-engagement Email (J04)',
+                SELECT 8, 'Stage 08 — Re-engagement Email',
                     COUNT(*),
                     SUM(CASE WHEN UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END),
@@ -1578,7 +1647,7 @@ def get_sfmc_stage_suppression(
                 WHERE UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT)) = 'TRUE'
                   AND DATEADD(DAY, 2, TRY_TO_DATE(HIGHENGAGEMENT_REMINDEREMAIL_SENT_DATE::STRING)) = '{target_date}'
                 UNION ALL
-                SELECT 9, 'Stage 9 - Final Reminder Email (J04)',
+                SELECT 9, 'Stage 09 — Final Reminder Email',
                     COUNT(*),
                     SUM(CASE WHEN UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT)) = 'TRUE'
                               AND TRY_TO_DATE(LOWENGAGEMENTFINALREMINDEREMAIL_SENT_DATE::STRING) = '{target_date}' THEN 1 ELSE 0 END),
@@ -2087,6 +2156,456 @@ def chart_funnel_waterfall(
 
 
 # ---------------------------------------------------------------------------
+# Tool 11d: Journey Stage Drop-off (Stage 01 → 09 progression)
+# ---------------------------------------------------------------------------
+
+@tool
+def get_journey_stage_dropoff() -> str:
+    """
+    Show the stage-by-stage email reach across all 9 stages of the Prospect Journey.
+
+    IMPORTANT INTERPRETATION RULES:
+    - A lower count at a later stage does NOT mean prospects "dropped off".
+    - Prospects only receive the next stage email after a defined interval (3/5/8/3/2/2/2/2 days).
+    - The only reason a prospect does NOT receive the next stage email is SUPPRESSION (IS_SUPPRESSED=TRUE).
+    - Prospects who are not yet suppressed and have not yet reached a later stage are simply
+      "awaiting their next interval" — they have NOT dropped off.
+    - "Emails to be sent" = prospects who received the prior stage but have not yet received
+      this stage. This count includes both suppressed prospects AND those awaiting the next interval.
+
+    Returns:
+        Part 1: Stage-by-stage email reach table (Prospects Sent, Emails to be sent, % Reached).
+        Part 2: Suppression by stage — where in the journey were suppressed prospects stopped.
+
+    ALWAYS use this tool when the user asks:
+    - "Where are prospects dropping off in the journey?"
+    - "How many prospects reached each stage?"
+    - "Stage-by-stage progression", "journey funnel", "stage reach"
+    - "Show me suppression between stages"
+
+    DO NOT use get_funnel_metrics for within-journey stage questions.
+    """
+    # ------------------------------------------------------------------
+    # PART 1: Stage-by-stage email reach — COUNT_IF per stage (Q4 pattern)
+    # Columns: Stage Name, Phase, Prospects Sent, Emails to be sent, % Reached
+    # "Emails to be sent" = prior stage sent count minus this stage sent count
+    # (includes suppressed + awaiting interval — NOT labelled as "dropped off")
+    # ------------------------------------------------------------------
+    progression_sql = textwrap.dedent("""
+        WITH base AS (
+            SELECT
+                COUNT_IF(UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT))      = 'TRUE') AS s01,
+                COUNT_IF(UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))    = 'TRUE') AS s02,
+                COUNT_IF(UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT))   = 'TRUE') AS s03,
+                COUNT_IF(UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))   = 'TRUE') AS s04,
+                COUNT_IF(UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))= 'TRUE') AS s05,
+                COUNT_IF(UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))   = 'TRUE') AS s06,
+                COUNT_IF(UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))     = 'TRUE') AS s07,
+                COUNT_IF(UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))  = 'TRUE') AS s08,
+                COUNT_IF(UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT))  = 'TRUE') AS s09
+            FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        )
+        SELECT
+            sn                                                              AS "Stage #",
+            stage_name                                                      AS "Stage Name",
+            phase                                                           AS "Phase",
+            sent                                                            AS "Prospects Sent",
+            CASE WHEN sn = 1 THEN NULL ELSE (prev - sent) END              AS "Emails to be sent",
+            ROUND(sent * 100.0 / NULLIF(s01, 0), 1)                       AS "% Reached"
+        FROM (
+            SELECT 1  AS sn, 'Stage 01 — Welcome Email'       AS stage_name, 'Welcome Phase'         AS phase, s01 AS sent, NULL AS prev, s01 FROM base
+            UNION ALL SELECT 2,  'Stage 02 — Education Email',       'Welcome Phase',         s02, s01, s01 FROM base
+            UNION ALL SELECT 3,  'Stage 03 — Education Email 1',     'Nurture Phase',         s03, s02, s01 FROM base
+            UNION ALL SELECT 4,  'Stage 04 — Education Email 2',     'Nurture Phase',         s04, s03, s01 FROM base
+            UNION ALL SELECT 5,  'Stage 05 — Prospect Story Email',  'Nurture Phase',         s05, s04, s01 FROM base
+            UNION ALL SELECT 6,  'Stage 06 — Conversion Email',      'High Engagement Phase', s06, s05, s01 FROM base
+            UNION ALL SELECT 7,  'Stage 07 — Reminder Email',        'High Engagement Phase', s07, s06, s01 FROM base
+            UNION ALL SELECT 8,  'Stage 08 — Re-engagement Email',   'Low Engagement Phase',  s08, s07, s01 FROM base
+            UNION ALL SELECT 9,  'Stage 09 — Final Reminder Email',  'Low Engagement Phase',  s09, s08, s01 FROM base
+        )
+        ORDER BY sn
+    """)
+    progression_result = _run(progression_sql, max_rows=9)
+
+    # ------------------------------------------------------------------
+    # PART 2: Suppression by journey stage — Q3 pattern
+    # Only suppressed prospects (SUPPRESSION_FLAG = 'true').
+    # Identifies which stage transition triggered the suppression cutoff.
+    # ------------------------------------------------------------------
+    suppression_sql = textwrap.dedent("""
+        SELECT
+            CASE
+                WHEN UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT))      = 'TRUE'
+                 AND UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))    != 'TRUE'
+                THEN 'Suppressed after Stage 01 — Welcome Email'
+                WHEN UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))    = 'TRUE'
+                 AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT))   != 'TRUE'
+                THEN 'Suppressed after Stage 02 — Education Email'
+                WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT))   = 'TRUE'
+                 AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))   != 'TRUE'
+                THEN 'Suppressed after Stage 03 — Education Email 1'
+                WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))   = 'TRUE'
+                 AND UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))!= 'TRUE'
+                THEN 'Suppressed after Stage 04 — Education Email 2'
+                WHEN UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))= 'TRUE'
+                 AND UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))   != 'TRUE'
+                 AND UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))  != 'TRUE'
+                THEN 'Suppressed after Stage 05 — Prospect Story (pre-branch)'
+                WHEN UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))   = 'TRUE'
+                 AND UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))     != 'TRUE'
+                THEN 'Suppressed after Stage 06 — Conversion Email'
+                WHEN UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))     = 'TRUE'
+                THEN 'Suppressed after Stage 07 — Reminder Email'
+                WHEN UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))  = 'TRUE'
+                 AND UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT))  != 'TRUE'
+                THEN 'Suppressed after Stage 08 — Re-engagement Email'
+                WHEN UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT))  = 'TRUE'
+                THEN 'Suppressed after Stage 09 — Final Reminder (journey end)'
+                ELSE 'Suppressed before Stage 01 (never entered journey)'
+            END                                                            AS "Suppressed At",
+            COUNT(*)                                                       AS "Suppressed Prospect Count",
+            ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1)           AS "% of All Suppressed"
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')
+        GROUP BY 1
+        ORDER BY 2 DESC
+    """)
+    suppression_result = _run(suppression_sql, max_rows=20)
+
+    return (
+        "### Prospect Journey — Stage-by-Stage Email Reach (Stage 01 → 09)\n"
+        "Note: 'Emails to be sent' = prospects who received the prior stage email but not this stage yet.\n"
+        "      This includes suppressed prospects AND those awaiting the next scheduled interval.\n"
+        "      A lower count at a later stage does NOT mean drop-off — see Part 2 for suppression detail.\n\n"
+        + progression_result
+        + "\n\n### Suppression by Journey Stage — Where Were Suppressed Prospects Stopped?\n"
+        "Note: Only prospects with SUPPRESSION_FLAG=TRUE are included below.\n\n"
+        + suppression_result
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 11e: Journey Overview — total / suppressed / active / phase completions
+# ---------------------------------------------------------------------------
+
+@tool
+def get_journey_overview() -> str:
+    """
+    Return a high-level Prospect Journey health summary:
+    - Total prospects in the journey table
+    - Suppressed vs active counts and suppression rate %
+    - Welcome Phase completion count
+    - Nurture Phase completion count
+    - Prospects with zero emails sent (pre-journey suppression candidates)
+    - High Engagement path vs Low Engagement path vs Not Yet Branched
+
+    ALWAYS call this tool first when the user asks:
+    - "Give me a journey overview / summary"
+    - "How is the Prospect Journey performing?"
+    - "What is the suppression rate for the journey?"
+    - "How many prospects completed the Welcome Phase or Nurture Phase?"
+    - Any broad journey health or status question before drilling into stages
+
+    Returns:
+        Journey health summary and engagement path split as markdown tables.
+    """
+    overview_sql = textwrap.dedent("""
+        SELECT
+            COUNT(*)                                                                                       AS "Total Prospects in Journey",
+            SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1') THEN 1 ELSE 0 END)     AS "Suppressed",
+            SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1')
+                       OR SUPPRESSION_FLAG IS NULL THEN 1 ELSE 0 END)                                    AS "Active (Not Suppressed)",
+            ROUND(SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1') THEN 1 ELSE 0 END)
+                  * 100.0 / COUNT(*), 1)                                                                  AS "Suppression Rate %",
+            SUM(CASE WHEN UPPER(TRIM(WELCOME_JOURNEY_COMPLETE)) = 'TRUE' THEN 1 ELSE 0 END)              AS "Welcome Phase Complete",
+            SUM(CASE WHEN UPPER(TRIM(NURTURE_JOURNEY_COMPLETE))  = 'TRUE' THEN 1 ELSE 0 END)             AS "Nurture Phase Complete",
+            SUM(CASE WHEN UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT)) != 'TRUE'
+                      AND UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT)) != 'TRUE'
+                 THEN 1 ELSE 0 END)                                                                       AS "Zero Emails Sent (Never Entered)"
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+    """)
+
+    path_sql = textwrap.dedent("""
+        SELECT
+            CASE
+                WHEN UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT)) = 'TRUE'
+                  OR UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))   = 'TRUE'
+                THEN 'High Engagement Path'
+                WHEN UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))     = 'TRUE'
+                  OR UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT)) = 'TRUE'
+                THEN 'Low Engagement Path'
+                ELSE 'Not Yet Branched'
+            END                                                                                         AS "Engagement Path",
+            COUNT(*)                                                                                    AS "Prospect Count",
+            ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1)                                        AS "% of Total",
+            SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1') THEN 1 ELSE 0 END)  AS "Suppressed in Path"
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        GROUP BY 1
+        ORDER BY 2 DESC
+    """)
+
+    zero_email_sql = textwrap.dedent("""
+        SELECT
+            SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1') THEN 1 ELSE 0 END)    AS "Zero-Email + Suppressed (pre-journey suppression)",
+            SUM(CASE WHEN UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1')
+                       OR SUPPRESSION_FLAG IS NULL THEN 1 ELSE 0 END)                                   AS "Zero-Email + Not Suppressed (awaiting journey entry)"
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT))      != 'TRUE'
+          AND UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))    != 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT))   != 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))   != 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))!= 'TRUE'
+          AND UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))   != 'TRUE'
+          AND UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))     != 'TRUE'
+          AND UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))  != 'TRUE'
+          AND UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT))  != 'TRUE'
+    """)
+
+    return (
+        "### Prospect Journey — Overall Health Summary\n"
+        + _run(overview_sql, max_rows=1)
+        + "\n\n### Engagement Path Split (High vs Low vs Not Yet Branched)\n"
+        + _run(path_sql, max_rows=5)
+        + "\n\n### Zero-Email Prospects — Pre-Journey Suppression vs Awaiting Entry\n"
+        + _run(zero_email_sql, max_rows=1)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 11f: Journey Suppression Linkage — per-stage transition analysis
+# ---------------------------------------------------------------------------
+
+@tool
+def get_journey_suppression_linkage() -> str:
+    """
+    Detailed suppression analysis for the Prospect Journey.
+
+    SUPPRESSION IS THE ONLY REASON a prospect does not advance to the next stage.
+    If IS_SUPPRESSED=FALSE and a later stage has not been sent, the prospect is simply
+    awaiting their next scheduled interval — they have NOT dropped off.
+
+    This tool returns:
+    - Part 1: Total suppressed prospects and suppression rate (Q1 summary)
+    - Part 2: For suppressed prospects only — exactly which stage transition triggered
+              the suppression cutoff (Q3 pattern: sent Stage N but NOT Stage N+1, suppressed)
+    - Part 3: Sequencing anomalies — later stage sent without the prior stage (data quality flag)
+
+    ALWAYS call this tool for:
+    - "Why are prospects being suppressed?"
+    - "At which stage is suppression highest?"
+    - "How many prospects were suppressed at Stage N?"
+    - "Are there data quality issues in the journey?"
+    - "Show me suppression by stage transition"
+
+    Returns:
+        Suppression summary + per-stage suppression breakdown + anomaly flags.
+    """
+    # ------------------------------------------------------------------
+    # PART 1: Overall suppression summary (Q1 pattern)
+    # ------------------------------------------------------------------
+    summary_sql = textwrap.dedent("""
+        SELECT
+            COUNT(*)                                                                                        AS "Total Prospects",
+            COUNT_IF(UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1'))                              AS "Suppressed",
+            COUNT_IF(UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1')
+                     OR SUPPRESSION_FLAG IS NULL)                                                           AS "Active (Not Suppressed)",
+            ROUND(COUNT_IF(UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1'))
+                  * 100.0 / COUNT(*), 1)                                                                    AS "Suppression Rate %",
+            COUNT_IF(UPPER(TRIM(WELCOME_JOURNEY_COMPLETE))  = 'TRUE')                                      AS "Welcome Phase Complete",
+            COUNT_IF(UPPER(TRIM(NURTURE_JOURNEY_COMPLETE))  = 'TRUE')                                      AS "Nurture Phase Complete"
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+    """)
+    summary_result = _run(summary_sql, max_rows=1)
+
+    # ------------------------------------------------------------------
+    # PART 2: Suppression by journey stage (Q3 pattern)
+    # Filters to SUPPRESSION_FLAG=TRUE only.
+    # CASE logic: Stage N sent AND Stage N+1 NOT sent → suppressed at that transition.
+    # ------------------------------------------------------------------
+    stage_sql = textwrap.dedent("""
+        SELECT
+            CASE
+                WHEN UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT))      = 'TRUE'
+                 AND UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))    != 'TRUE'
+                THEN 'Suppressed after Stage 01 — Welcome Email'
+                WHEN UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))    = 'TRUE'
+                 AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT))   != 'TRUE'
+                THEN 'Suppressed after Stage 02 — Education Email'
+                WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT))   = 'TRUE'
+                 AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))   != 'TRUE'
+                THEN 'Suppressed after Stage 03 — Education Email 1'
+                WHEN UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))   = 'TRUE'
+                 AND UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))!= 'TRUE'
+                THEN 'Suppressed after Stage 04 — Education Email 2'
+                WHEN UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))= 'TRUE'
+                 AND UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))   != 'TRUE'
+                 AND UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))  != 'TRUE'
+                THEN 'Suppressed after Stage 05 — Prospect Story (pre-branch)'
+                WHEN UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))   = 'TRUE'
+                 AND UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))     != 'TRUE'
+                THEN 'Suppressed after Stage 06 — Conversion Email'
+                WHEN UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))     = 'TRUE'
+                THEN 'Suppressed after Stage 07 — Reminder Email'
+                WHEN UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))  = 'TRUE'
+                 AND UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT))  != 'TRUE'
+                THEN 'Suppressed after Stage 08 — Re-engagement Email'
+                WHEN UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT))  = 'TRUE'
+                THEN 'Suppressed after Stage 09 — Final Reminder (journey end)'
+                ELSE 'Suppressed before Stage 01 (never entered journey)'
+            END                                                            AS "Suppressed At Stage",
+            COUNT(*)                                                       AS "Suppressed Prospect Count",
+            ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1)           AS "% of All Suppressed"
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')
+        GROUP BY 1
+        ORDER BY 2 DESC
+    """)
+    stage_result = _run(stage_sql, max_rows=15)
+
+    # ------------------------------------------------------------------
+    # PART 3: Sequencing anomalies — later stage sent but earlier blank
+    # (Only non-suppressed prospects — suppressed ones may have gaps intentionally)
+    # ------------------------------------------------------------------
+    anomaly_sql = textwrap.dedent("""
+        SELECT
+            'Stage 02 sent but Stage 01 not sent' AS "Anomaly Type",
+            COUNT(*) AS "Count"
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) = 'TRUE'
+          AND UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT))  != 'TRUE'
+          AND (UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1') OR SUPPRESSION_FLAG IS NULL)
+        UNION ALL
+        SELECT 'Stage 03 sent but Stage 02 not sent', COUNT(*)
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) = 'TRUE'
+          AND UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) != 'TRUE'
+          AND (UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1') OR SUPPRESSION_FLAG IS NULL)
+        UNION ALL
+        SELECT 'Stage 04 sent but Stage 03 not sent', COUNT(*)
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))  = 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) != 'TRUE'
+          AND (UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1') OR SUPPRESSION_FLAG IS NULL)
+        UNION ALL
+        SELECT 'Stage 05 sent but Stage 04 not sent', COUNT(*)
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))= 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT)) != 'TRUE'
+          AND (UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1') OR SUPPRESSION_FLAG IS NULL)
+        UNION ALL
+        SELECT 'Stage 06 sent but Stage 05 not sent', COUNT(*)
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))   = 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))!= 'TRUE'
+          AND (UPPER(TRIM(SUPPRESSION_FLAG)) NOT IN ('YES','Y','TRUE','1') OR SUPPRESSION_FLAG IS NULL)
+    """)
+    anomaly_result = _run(anomaly_sql, max_rows=10)
+
+    return (
+        "### Prospect Journey — Suppression Summary\n"
+        "Note: Suppression is the ONLY reason a prospect does not advance to the next stage.\n"
+        "      Prospects with IS_SUPPRESSED=FALSE who have not yet reached a later stage\n"
+        "      are awaiting their next scheduled interval — they have NOT been suppressed.\n\n"
+        + summary_result
+        + "\n\n### Suppression by Journey Stage — Where Were Prospects Suppressed? (Q3 pattern)\n"
+        "Filtered to SUPPRESSION_FLAG=TRUE only. Each row = Stage N was sent but Stage N+1 was not.\n\n"
+        + stage_result
+        + "\n\n### Sequencing Anomalies — Later Stage Sent Without Prior Stage (non-suppressed only)\n"
+        "A count > 0 indicates a data quality or journey logic issue that should be investigated.\n\n"
+        + anomaly_result
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 11g: Journey Pace Analysis — avg days between stages
+# ---------------------------------------------------------------------------
+
+@tool
+def get_journey_pace_analysis() -> str:
+    """
+    Calculate the average number of days between consecutive journey stages
+    for prospects who successfully progressed through each transition.
+
+    Use this to understand:
+    - Whether journey stage timing is on schedule vs the expected intervals
+    - Which transitions have unusually long or short gaps
+    - Whether pace anomalies correlate with suppression points
+
+    Expected stage intervals (business rules):
+    Stage 01→02: 3 days | Stage 02→03: 5 days | Stage 03→04: 8 days
+    Stage 04→05: 3 days | Stage 05→06: 2 days | Stage 06→07: 2 days
+    Stage 07→08: 2 days | Stage 08→09: 2 days
+
+    Use this when the user asks:
+    - "How fast are prospects moving through the journey?"
+    - "Are stage emails being sent on time?"
+    - "What is the average pace of the prospect journey?"
+    - "Are there timing anomalies between stages?"
+
+    Returns:
+        Table of average days per stage transition vs expected interval.
+    """
+    pace_sql = textwrap.dedent("""
+        SELECT
+            'Stage 01 → Stage 02 (expected: 3 days)'  AS transition,
+            3                                          AS expected_days,
+            ROUND(AVG(DATEDIFF('day',
+                TRY_TO_TIMESTAMP(WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE),
+                TRY_TO_TIMESTAMP(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE)
+            )), 1)                                     AS avg_actual_days,
+            COUNT(*)                                   AS prospects_in_transition
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT))   = 'TRUE'
+          AND UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT)) = 'TRUE'
+          AND WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE   IS NOT NULL
+          AND WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE IS NOT NULL
+        UNION ALL
+        SELECT 'Stage 02 → Stage 03 (expected: 5 days)', 5,
+            ROUND(AVG(DATEDIFF('day',
+                TRY_TO_TIMESTAMP(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE),
+                TRY_TO_TIMESTAMP(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE)
+            )), 1), COUNT(*)
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))  = 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) = 'TRUE'
+          AND WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE   IS NOT NULL
+          AND NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE  IS NOT NULL
+        UNION ALL
+        SELECT 'Stage 03 → Stage 04 (expected: 8 days)', 8,
+            ROUND(AVG(DATEDIFF('day',
+                TRY_TO_TIMESTAMP(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE),
+                TRY_TO_TIMESTAMP(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE)
+            )), 1), COUNT(*)
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT)) = 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT)) = 'TRUE'
+          AND NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE IS NOT NULL
+          AND NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE IS NOT NULL
+        UNION ALL
+        SELECT 'Stage 04 → Stage 05 (expected: 3 days)', 3,
+            ROUND(AVG(DATEDIFF('day',
+                TRY_TO_TIMESTAMP(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE),
+                TRY_TO_TIMESTAMP(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE)
+            )), 1), COUNT(*)
+        FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS
+        WHERE UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))   = 'TRUE'
+          AND UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))= 'TRUE'
+          AND NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE    IS NOT NULL
+          AND NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE IS NOT NULL
+        ORDER BY transition
+    """)
+    pace_result = _run(pace_sql, max_rows=10)
+    return "### Prospect Journey — Average Days Between Stages vs Expected Intervals\n" + pace_result
+
+
+# ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
 
@@ -2103,6 +2622,10 @@ ALL_TOOLS = [
     get_rejected_lead_details,
     get_prospect_details,
     get_sfmc_stage_suppression,
+    get_journey_stage_dropoff,
+    get_journey_overview,
+    get_journey_suppression_linkage,
+    get_journey_pace_analysis,
     get_sfmc_prospect_outbound_match,
     # Chart tools — purpose-built
     chart_smart,

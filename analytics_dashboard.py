@@ -81,10 +81,33 @@ def _chan_where(channel: str) -> str:
            f" AND UPPER(CHANNEL) = UPPER('{channel}')"
 
 
+_PHASE_TO_JOURNEY_CODES = {
+    "Welcome Phase":         ["J01"],
+    "Nurture Phase":         ["J02"],
+    "High Engagement Phase": ["J03"],
+    "Low Engagement Phase":  ["J04"],
+}
+
+# Mapping from display label to DIM_SFMC_JOB JOURNEY_TYPE values
+_PHASE_LABEL_TO_CODES = {
+    "Welcome Phase":         "J01",
+    "Nurture Phase":         "J02",
+    "High Engagement Phase": "J03",
+    "Low Engagement Phase":  "J04",
+}
+
+
 def _journey_code(journey: str) -> str:
-    """Extract bare code 'J01' from 'J01 - Welcome' etc."""
+    """
+    Return the DIM_SFMC_JOB JOURNEY_TYPE code for a given phase display label.
+    Accepts phase labels (e.g. 'Welcome Phase') or legacy J01 codes for compatibility.
+    """
     if not journey or journey == "All":
         return ""
+    # New phase label format
+    if journey in _PHASE_LABEL_TO_CODES:
+        return _PHASE_LABEL_TO_CODES[journey]
+    # Legacy format fallback: 'J01 - Welcome' etc.
     return journey.split(" - ")[0].strip().upper()
 
 
@@ -102,8 +125,14 @@ def _fetch_filter_options() -> dict[str, list]:
         FROM QA_FIPSAR_PHI_HUB.STAGING.STG_PROSPECT_INTAKE ORDER BY 1
     """)
     ch_list = ["All"] + (channels.iloc[:, 0].tolist() if not channels.empty else [])
-    journeys = ["All", "J01 - Welcome", "J02 - Nurture",
-                "J03 - Conversion", "J04 - Re-engagement"]
+    # Prospect Journey phases — for filtering by phase in dashboard dropdowns
+    journeys = [
+        "All",
+        "Welcome Phase",
+        "Nurture Phase",
+        "High Engagement Phase",
+        "Low Engagement Phase",
+    ]
     return {"channels": ch_list, "journeys": journeys}
 
 

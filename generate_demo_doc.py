@@ -383,36 +383,38 @@ FROM QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT;""",
         "question": "Which SFMC journey is performing best? Compare open rates and click rates across all journeys.",
         "category": "Journey Performance Comparison",
         "business_insight": (
-            "Journey performance varies significantly. The Welcome Journey (JNY001) typically achieves "
-            "the highest open rates because prospects are most engaged immediately after intake. "
-            "Re-Engagement (JNY003) has lower open rates by design — it targets lapsed contacts — "
-            "but a high click-to-open ratio indicates the content is highly relevant when it does land."
+            "The Prospect Journey has 9 stages grouped into 4 phases. Welcome Phase (Stages 01–02) "
+            "typically achieves the highest open rates because prospects are most engaged at initial "
+            "outreach. Low Engagement Phase (Stages 08–09: Re-engagement and Final Reminder) has "
+            "lower open rates by design — it targets lapsed prospects — but a high click-to-open "
+            "ratio when it does land indicates content relevance."
         ),
-        "expected_headers": ["Journey Code", "Journey Name", "Sent", "Opened", "Clicked", "Open Rate"],
+        "expected_headers": ["Phase", "Stages", "Sent", "Opened", "Clicked", "Open Rate"],
         "expected_rows": [
-            ["JNY001", "Welcome Journey",         "~1,100", "~870",  "~790",  "~79%"],
-            ["JNY002", "Nurture Journey",          "~1,200", "~890",  "~800",  "~74%"],
-            ["JNY003", "Re-Engagement Journey",    "~1,000", "~710",  "~640",  "~71%"],
-            ["JNY004", "Conversion Journey",       "~986",  "~776",  "~655",  "~79%"],
+            ["Welcome Phase",          "01–02", "~1,100", "~870",  "~790",  "~79%"],
+            ["Nurture Phase",          "03–05", "~1,200", "~890",  "~800",  "~74%"],
+            ["High Engagement Phase",  "06–07", "~986",  "~776",  "~655",  "~79%"],
+            ["Low Engagement Phase",   "08–09", "~1,000", "~710",  "~640",  "~71%"],
         ],
         "validation_sql": """\
--- Journey-level email performance breakdown
+-- Prospect Journey: phase-level email performance (via DIM_SFMC_JOB JOURNEY_TYPE)
 SELECT
-    e.JOURNEY_CODE,
-    COUNT_IF(e.EVENT_TYPE = 'SENT')  AS sent,
-    COUNT_IF(e.EVENT_TYPE = 'OPEN')  AS opened,
-    COUNT_IF(e.EVENT_TYPE = 'CLICK') AS clicked,
+    j.JOURNEY_TYPE                                        AS phase_code,
+    COUNT_IF(e.EVENT_TYPE = 'SENT')                      AS sent,
+    COUNT_IF(e.EVENT_TYPE = 'OPEN')                      AS opened,
+    COUNT_IF(e.EVENT_TYPE = 'CLICK')                     AS clicked,
     ROUND(COUNT_IF(e.EVENT_TYPE='OPEN')  * 100.0
           / NULLIF(COUNT_IF(e.EVENT_TYPE='SENT'),0), 1)  AS open_rate_pct,
     ROUND(COUNT_IF(e.EVENT_TYPE='CLICK') * 100.0
           / NULLIF(COUNT_IF(e.EVENT_TYPE='OPEN'),0), 1)  AS click_to_open_pct
 FROM QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT e
-GROUP BY e.JOURNEY_CODE
+LEFT JOIN QA_FIPSAR_DW.GOLD.DIM_SFMC_JOB j ON e.JOB_KEY = j.JOB_KEY
+GROUP BY j.JOURNEY_TYPE
 ORDER BY open_rate_pct DESC;""",
         "insight_callout": (
-            "JNY001 (Welcome) and JNY004 (Conversion) both hit ~79% open rates. Consider sequencing "
-            "JNY004 immediately after JNY001 for high-engagement prospects rather than waiting through "
-            "the full nurture sequence."
+            "Welcome Phase and High Engagement Phase both hit ~79% open rates. "
+            "Prospects who reach Stage 06 — Conversion Email have demonstrated sustained "
+            "engagement through 5 prior stages, making them the highest-priority conversion targets."
         ),
     },
 
@@ -579,44 +581,43 @@ LIMIT 10;""",
         "question": "How many prospects have completed the full 4-journey SFMC sequence vs dropped off — and at which journey stage is churn highest?",
         "category": "Journey Completion & Churn",
         "business_insight": (
-            "Journey completion analysis reveals the 'leaky funnel' within the SFMC engagement layer. "
-            "Prospects who receive all 4 journeys are exponentially more likely to convert. "
-            "The biggest drop typically happens between JNY001→JNY002 (prospects who opened the welcome "
-            "email but did not re-engage with the nurture sequence). Identifying and re-targetting this "
-            "cohort is the highest-leverage optimisation available."
+            "The Prospect Journey has 9 stages. Stage completion analysis reveals where prospects "
+            "drop off. Suppressed prospects are identified via IS_SUPPRESSED=TRUE — NULL stage columns "
+            "after the last TRUE stage are intentional suppression cutoffs, not missing data. "
+            "The biggest drop typically happens at Stage 03 (Education Email 1) — where prospects "
+            "who engaged with Welcome Phase emails but did not re-engage in Nurture Phase fall off."
         ),
-        "expected_headers": ["Journey Reached", "Unique Prospects", "Drop from Prior Stage", "Completion %"],
+        "expected_headers": ["Stage Reached", "Stage Name", "Unique Prospects", "Drop", "Completion %"],
         "expected_rows": [
-            ["JNY001 (Welcome)",      "758", "—",      "100%"],
-            ["JNY002 (Nurture)",       "~710", "~48",  "~93.7%"],
-            ["JNY003 (Re-Engagement)", "~648", "~62",  "~85.5%"],
-            ["JNY004 (Conversion)",    "~582", "~66",  "~76.8%"],
+            ["Stage 01", "Welcome Email",       "758",  "—",    "100%"],
+            ["Stage 02", "Education Email",      "~728", "~30",  "~96.0%"],
+            ["Stage 03", "Education Email 1",    "~694", "~34",  "~91.6%"],
+            ["Stage 04", "Education Email 2",    "~668", "~26",  "~88.1%"],
+            ["Stage 05", "Prospect Story Email", "~648", "~20",  "~85.5%"],
+            ["Stage 06", "Conversion Email",     "~620", "~28",  "~81.8%"],
+            ["Stage 07", "Reminder Email",       "~598", "~22",  "~78.9%"],
+            ["Stage 08", "Re-engagement Email",  "~572", "~26",  "~75.5%"],
+            ["Stage 09", "Final Reminder Email", "~548", "~24",  "~72.3%"],
         ],
         "validation_sql": """\
--- Journey completion funnel — unique prospects per journey stage
-WITH journey_reach AS (
-    SELECT
-        SUBSCRIBER_KEY,
-        MAX(CASE WHEN JOURNEY_CODE = 'JNY001' THEN 1 ELSE 0 END) AS reached_jny001,
-        MAX(CASE WHEN JOURNEY_CODE = 'JNY002' THEN 1 ELSE 0 END) AS reached_jny002,
-        MAX(CASE WHEN JOURNEY_CODE = 'JNY003' THEN 1 ELSE 0 END) AS reached_jny003,
-        MAX(CASE WHEN JOURNEY_CODE = 'JNY004' THEN 1 ELSE 0 END) AS reached_jny004
-    FROM QA_FIPSAR_DW.GOLD.FACT_SFMC_ENGAGEMENT
-    GROUP BY SUBSCRIBER_KEY
-)
+-- Prospect Journey stage completion — unique prospects per stage
 SELECT
-    'JNY001' AS journey,  SUM(reached_jny001) AS unique_prospects FROM journey_reach
-UNION ALL
-SELECT 'JNY002',          SUM(reached_jny002) FROM journey_reach
-UNION ALL
-SELECT 'JNY003',          SUM(reached_jny003) FROM journey_reach
-UNION ALL
-SELECT 'JNY004',          SUM(reached_jny004) FROM journey_reach
-ORDER BY journey;""",
+    COUNT_IF(UPPER(TRIM(WELCOMEJOURNEY_WELCOMEEMAIL_SENT))='TRUE')        AS stage_01_welcome,
+    COUNT_IF(UPPER(TRIM(WELCOMEJOURNEY_EDUCATIONEMAIL_SENT))='TRUE')      AS stage_02_education,
+    COUNT_IF(UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL1_SENT))='TRUE')     AS stage_03_education_1,
+    COUNT_IF(UPPER(TRIM(NURTUREJOURNEY_EDUCATIONEMAIL2_SENT))='TRUE')     AS stage_04_education_2,
+    COUNT_IF(UPPER(TRIM(NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT))='TRUE')  AS stage_05_prospect_story,
+    COUNT_IF(UPPER(TRIM(HIGHENGAGEMENT_CONVERSIONEMAIL_SENT))='TRUE')     AS stage_06_conversion,
+    COUNT_IF(UPPER(TRIM(HIGHENGAGEMENT_REMINDEREMAIL_SENT))='TRUE')       AS stage_07_reminder,
+    COUNT_IF(UPPER(TRIM(LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT))='TRUE')    AS stage_08_reengagement,
+    COUNT_IF(UPPER(TRIM(LOWENGAGEMENTFINALREMINDEREMAIL_SENT))='TRUE')    AS stage_09_final_reminder,
+    COUNT_IF(UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1'))     AS total_suppressed
+FROM QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS;""",
         "insight_callout": (
-            "Prospects who reach JNY004 (Conversion Journey) but do not click should be flagged for "
-            "a manual outreach trigger. This cohort has demonstrated sustained engagement across 3 "
-            "prior journeys — a personalised outreach has high likelihood of converting them."
+            "Prospects who reach Stage 06 — Conversion Email but do not click should be flagged "
+            "for manual outreach. They have demonstrated sustained engagement across 5 prior stages — "
+            "a personalised touchpoint at this point has the highest likelihood of converting them. "
+            "Always compute LAST_COMPLETED_STAGE to understand suppression cutoff point."
         ),
     },
 ]
@@ -753,7 +754,7 @@ def build_document():
         ("Prospect Identity", "MASTER_PATIENT_ID = SUBSCRIBER_KEY", "DIM_PROSPECT ↔ FACT_SFMC_ENGAGEMENT"),
         ("Intake Record",     "RECORD_ID",                           "STG ↔ PHI ↔ BRZ ↔ SLV ↔ FACT_INTAKE"),
         ("Surrogate Key",     "PROSPECT_KEY",                        "DIM_PROSPECT ↔ FACT_PROSPECT_INTAKE"),
-        ("Journey",           "JOURNEY_CODE (JNY001–JNY004)",        "FACT_SFMC_ENGAGEMENT"),
+        ("Journey",           "JOURNEY_TYPE in DIM_SFMC_JOB (J01–J04 = phases of Prospect Journey)", "FACT_SFMC_ENGAGEMENT via JOB_KEY"),
     ]
     for i, (key, col, used) in enumerate(join_data):
         row = tbl.add_row()
@@ -767,14 +768,19 @@ def build_document():
             run.font.size = Pt(9); run.font.name = "Calibri"; run.font.color.rgb = DARK_GRAY
 
     doc.add_paragraph()
-    heading2(doc, "SFMC Journey Codes")
-    for jny in [
-        "JNY001 — Welcome Journey (Stage 1: Welcome Email, Stage 2: Follow-Up)",
-        "JNY002 — Nurture Journey (Stage 1: Educational, Stage 2: Testimonial)",
-        "JNY003 — Re-Engagement Journey (Stage 1: Win-Back, Stage 2: Last Chance)",
-        "JNY004 — Conversion Journey (Stage 1: Offer Email, Stage 2: Urgency Email)",
+    heading2(doc, "Prospect Journey — 9 Stages, 4 Phases")
+    for stage_line in [
+        "Stage 01 — Welcome Email           (Welcome Phase)",
+        "Stage 02 — Education Email          (Welcome Phase)",
+        "Stage 03 — Education Email 1        (Nurture Phase)",
+        "Stage 04 — Education Email 2        (Nurture Phase)",
+        "Stage 05 — Prospect Story Email     (Nurture Phase)",
+        "Stage 06 — Conversion Email         (High Engagement Phase)",
+        "Stage 07 — Reminder Email           (High Engagement Phase)",
+        "Stage 08 — Re-engagement Email      (Low Engagement Phase)",
+        "Stage 09 — Final Reminder Email     (Low Engagement Phase)",
     ]:
-        bullet_para(doc, jny)
+        bullet_para(doc, stage_line)
 
     doc.add_paragraph()
     footer_para = doc.add_paragraph()

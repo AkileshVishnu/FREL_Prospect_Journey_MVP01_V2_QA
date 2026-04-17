@@ -79,11 +79,28 @@ semantic_layer:
           current tables is MASTER_PATIENT_ID, but business meaning in this MVP is Master Prospect ID.
       journey:
         definition: >
-          A business-defined multi-stage communication flow within SFMC. Example journeys include
-          Welcome, Nurture, Conversion, and Re-engagement.
+          There is exactly ONE journey in this platform: the "Prospect Journey". It is a single
+          linear communication flow executed in Salesforce Marketing Cloud across 9 ordered stages.
+          Stages are grouped into 4 phases for business readability (Welcome Phase, Nurture Phase,
+          High Engagement Phase, Low Engagement Phase) but these phases are NOT separate journeys.
+          Never refer to "4 journeys" — there is only the Prospect Journey.
+        forbidden_synonyms:
+          - "Welcome Journey"
+          - "Nurture Journey"
+          - "Conversion Journey"
+          - "Re-engagement Journey"
+          - "J01"
+          - "J02"
+          - "J03"
+          - "J04"
       stage:
         definition: >
-          A numbered step within a Journey, usually represented by an email touchpoint and associated stage name.
+          A numbered step (01–09) within the Prospect Journey, each represented by an email
+          touchpoint. Stages are sequential — a stage can only be reached if all prior stages
+          were completed. Stage names: Stage 01 Welcome Email, Stage 02 Education Email,
+          Stage 03 Education Email 1, Stage 04 Education Email 2, Stage 05 Prospect Story Email,
+          Stage 06 Conversion Email, Stage 07 Reminder Email, Stage 08 Re-engagement Email,
+          Stage 09 Final Reminder Email.
       suppression:
         definition: >
           A business or operational outcome where an intended send did not proceed and the record
@@ -499,15 +516,17 @@ semantic_layer:
                   - "PROSPECT_ID = MASTER_PATIENT_ID — same direct join as RAW_SFMC_PROSPECT_C"
                   - "BATCH_ID and JOB_ID link to the specific export job that loaded this history record"
               QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_PROSPECT_JOURNEY_DETAILS:
-                grain: "One row per prospect — wide table with per-stage sent flags and journey completion status"
+                grain: "One row per prospect — wide table tracking progress across all 9 stages of the Prospect Journey"
                 business_role: >
-                  Tracks each prospect's journey progress across all 9 stages. This is a WIDE table
-                  where each stage has its own SENT flag (VARCHAR 'True'/'False') and SENT_DATE column.
-                  SUPPRESSION_FLAG drives suppression observability: when it is TRUE/YES/Y/1,
-                  the record is written to DQ_REJECTION_LOG with REJECTION_REASON = 'SUPPRESSED_PROSPECT',
-                  and IS_SUPPRESSED = TRUE in FACT_SFMC_ENGAGEMENT.
+                  Tracks each prospect's progress through the single Prospect Journey across 9 ordered
+                  stages. This is a WIDE table where each stage has its own SENT flag (VARCHAR 'True'/'False')
+                  and SENT_DATE column. IS_SUPPRESSED (semantic alias for SUPPRESSION_FLAG) drives
+                  suppression observability: when TRUE/YES/Y/1, the record is written to DQ_REJECTION_LOG
+                  with REJECTION_REASON = 'SUPPRESSED_PROSPECT', and IS_SUPPRESSED = TRUE in FACT_SFMC_ENGAGEMENT.
+                  Stages are strictly sequential — NULL values after the last TRUE stage indicate intentional
+                  suppression cutoff, NOT missing data.
                   Key: PROSPECT_ID = MASTER_PATIENT_ID (FIP... format).
-                key_columns:
+                physical_columns:
                   - "PROSPECT_ID"
                   - "WELCOME_JOURNEY_COMPLETE"
                   - "NURTURE_JOURNEY_COMPLETE"
@@ -530,25 +549,132 @@ semantic_layer:
                   - "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT_DATE"
                   - "LOWENGAGEMENTFINALREMINDEREMAIL_SENT"
                   - "LOWENGAGEMENTFINALREMINDEREMAIL_SENT_DATE"
+                semantic_aliases:
+                  PROSPECT_ID: "PROSPECT_ID (= MASTER_PATIENT_ID = SUBSCRIBER_KEY)"
+                  WELCOME_JOURNEY_COMPLETE: "IS_WELCOME_PHASE_COMPLETE"
+                  NURTURE_JOURNEY_COMPLETE: "IS_NURTURE_PHASE_COMPLETE"
+                  SUPPRESSION_FLAG: "IS_SUPPRESSED"
+                  WELCOMEJOURNEY_WELCOMEEMAIL_SENT: "STAGE_01_WELCOME_EMAIL_SENT"
+                  WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE: "STAGE_01_WELCOME_EMAIL_SENT_DATE"
+                  WELCOMEJOURNEY_EDUCATIONEMAIL_SENT: "STAGE_02_EDUCATION_EMAIL_SENT"
+                  WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE: "STAGE_02_EDUCATION_EMAIL_SENT_DATE"
+                  NURTUREJOURNEY_EDUCATIONEMAIL1_SENT: "STAGE_03_EDUCATION_EMAIL_1_SENT"
+                  NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE: "STAGE_03_EDUCATION_EMAIL_1_SENT_DATE"
+                  NURTUREJOURNEY_EDUCATIONEMAIL2_SENT: "STAGE_04_EDUCATION_EMAIL_2_SENT"
+                  NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE: "STAGE_04_EDUCATION_EMAIL_2_SENT_DATE"
+                  NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT: "STAGE_05_PROSPECT_STORY_EMAIL_SENT"
+                  NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE: "STAGE_05_PROSPECT_STORY_EMAIL_SENT_DATE"
+                  HIGHENGAGEMENT_CONVERSIONEMAIL_SENT: "STAGE_06_CONVERSION_EMAIL_SENT"
+                  HIGHENGAGEMENT_CONVERSIONEMAIL_SENT_DATE: "STAGE_06_CONVERSION_EMAIL_SENT_DATE"
+                  HIGHENGAGEMENT_REMINDEREMAIL_SENT: "STAGE_07_REMINDER_EMAIL_SENT"
+                  HIGHENGAGEMENT_REMINDEREMAIL_SENT_DATE: "STAGE_07_REMINDER_EMAIL_SENT_DATE"
+                  LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT: "STAGE_08_REENGAGEMENT_EMAIL_SENT"
+                  LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT_DATE: "STAGE_08_REENGAGEMENT_EMAIL_SENT_DATE"
+                  LOWENGAGEMENTFINALREMINDEREMAIL_SENT: "STAGE_09_FINAL_REMINDER_EMAIL_SENT"
+                  LOWENGAGEMENTFINALREMINDEREMAIL_SENT_DATE: "STAGE_09_FINAL_REMINDER_EMAIL_SENT_DATE"
                 stage_column_map:
-                  stage_1: "WELCOMEJOURNEY_WELCOMEEMAIL_SENT / _DATE (J01 Welcome Email)"
-                  stage_2: "WELCOMEJOURNEY_EDUCATIONEMAIL_SENT / _DATE (J01 Education Email)"
-                  stage_3: "NURTUREJOURNEY_EDUCATIONEMAIL1_SENT / _DATE (J02 Education Email 1)"
-                  stage_4: "NURTUREJOURNEY_EDUCATIONEMAIL2_SENT / _DATE (J02 Education Email 2)"
-                  stage_5: "NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT / _DATE (J02 Prospect Story)"
-                  stage_6: "HIGHENGAGEMENT_CONVERSIONEMAIL_SENT / _DATE (J03 Conversion Email)"
-                  stage_7: "HIGHENGAGEMENT_REMINDEREMAIL_SENT / _DATE (J03 Reminder Email)"
-                  stage_8: "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT / _DATE (J04 Re-engagement Email)"
-                  stage_9: "LOWENGAGEMENTFINALREMINDEREMAIL_SENT / _DATE (J04 Final Reminder)"
+                  stage_01:
+                    physical: "WELCOMEJOURNEY_WELCOMEEMAIL_SENT / WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE"
+                    semantic: "STAGE_01_WELCOME_EMAIL_SENT / STAGE_01_WELCOME_EMAIL_SENT_DATE"
+                    business_name: "Welcome Email"
+                    phase: "Welcome Phase"
+                  stage_02:
+                    physical: "WELCOMEJOURNEY_EDUCATIONEMAIL_SENT / WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE"
+                    semantic: "STAGE_02_EDUCATION_EMAIL_SENT / STAGE_02_EDUCATION_EMAIL_SENT_DATE"
+                    business_name: "Education Email"
+                    phase: "Welcome Phase"
+                  stage_03:
+                    physical: "NURTUREJOURNEY_EDUCATIONEMAIL1_SENT / NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE"
+                    semantic: "STAGE_03_EDUCATION_EMAIL_1_SENT / STAGE_03_EDUCATION_EMAIL_1_SENT_DATE"
+                    business_name: "Education Email 1"
+                    phase: "Nurture Phase"
+                  stage_04:
+                    physical: "NURTUREJOURNEY_EDUCATIONEMAIL2_SENT / NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE"
+                    semantic: "STAGE_04_EDUCATION_EMAIL_2_SENT / STAGE_04_EDUCATION_EMAIL_2_SENT_DATE"
+                    business_name: "Education Email 2"
+                    phase: "Nurture Phase"
+                  stage_05:
+                    physical: "NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT / NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE"
+                    semantic: "STAGE_05_PROSPECT_STORY_EMAIL_SENT / STAGE_05_PROSPECT_STORY_EMAIL_SENT_DATE"
+                    business_name: "Prospect Story Email"
+                    phase: "Nurture Phase"
+                  stage_06:
+                    physical: "HIGHENGAGEMENT_CONVERSIONEMAIL_SENT / HIGHENGAGEMENT_CONVERSIONEMAIL_SENT_DATE"
+                    semantic: "STAGE_06_CONVERSION_EMAIL_SENT / STAGE_06_CONVERSION_EMAIL_SENT_DATE"
+                    business_name: "Conversion Email"
+                    phase: "High Engagement Phase"
+                  stage_07:
+                    physical: "HIGHENGAGEMENT_REMINDEREMAIL_SENT / HIGHENGAGEMENT_REMINDEREMAIL_SENT_DATE"
+                    semantic: "STAGE_07_REMINDER_EMAIL_SENT / STAGE_07_REMINDER_EMAIL_SENT_DATE"
+                    business_name: "Reminder Email"
+                    phase: "High Engagement Phase"
+                  stage_08:
+                    physical: "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT / LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT_DATE"
+                    semantic: "STAGE_08_REENGAGEMENT_EMAIL_SENT / STAGE_08_REENGAGEMENT_EMAIL_SENT_DATE"
+                    business_name: "Re-engagement Email"
+                    phase: "Low Engagement Phase"
+                  stage_09:
+                    physical: "LOWENGAGEMENTFINALREMINDEREMAIL_SENT / LOWENGAGEMENTFINALREMINDEREMAIL_SENT_DATE"
+                    semantic: "STAGE_09_FINAL_REMINDER_EMAIL_SENT / STAGE_09_FINAL_REMINDER_EMAIL_SENT_DATE"
+                    business_name: "Final Reminder Email"
+                    phase: "Low Engagement Phase"
                 suppression_logic:
                   trigger: "UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')"
+                  stage_aware_cutoff: >
+                    Suppression can occur at any stage. When IS_SUPPRESSED = TRUE, all stage SENT
+                    flags after the last TRUE flag will be NULL. NULL values in these post-suppression
+                    stage columns must NOT be treated as missing data — they are intentional cutoffs.
+                  identification_rules:
+                    - "If IS_SUPPRESSED = TRUE, identify the highest stage where *_SENT = TRUE (UPPER(TRIM())='TRUE'). This is the LAST_COMPLETED_STAGE."
+                    - "The first stage after LAST_COMPLETED_STAGE where the value is NULL represents the SUPPRESSION_STAGE."
+                    - "All stages after SUPPRESSION_STAGE will also be NULL — treat them as suppression artifacts, not data gaps."
+                  suppression_examples:
+                    suppressed_at_stage_02:
+                      description: "Prospect suppressed before Stage 02 was sent"
+                      STAGE_01_WELCOME_EMAIL_SENT: "TRUE"
+                      STAGE_02_EDUCATION_EMAIL_SENT: "NULL"
+                      STAGE_03_to_09: "NULL"
+                      IS_SUPPRESSED: "TRUE"
+                      last_completed_stage: "Stage 01 — Welcome Email"
+                      suppression_stage: "Stage 02 — Education Email"
+                    suppressed_at_stage_07:
+                      description: "Prospect suppressed after Stage 07 was sent"
+                      STAGE_01_to_07: "TRUE"
+                      STAGE_08_REENGAGEMENT_EMAIL_SENT: "NULL"
+                      STAGE_09_FINAL_REMINDER_EMAIL_SENT: "NULL"
+                      IS_SUPPRESSED: "TRUE"
+                      last_completed_stage: "Stage 07 — Reminder Email"
+                      suppression_stage: "Stage 08 — Re-engagement Email"
                   actions:
                     - "Write to QA_FIPSAR_AUDIT.PIPELINE_AUDIT.DQ_REJECTION_LOG with REJECTION_REASON = 'SUPPRESSED_PROSPECT', TABLE_NAME = 'FACT_SFMC_ENGAGEMENT'"
                     - "Set IS_SUPPRESSED = TRUE and SUPPRESSION_REASON = 'SUPPRESSION_FLAG=YES' in FACT_SFMC_ENGAGEMENT"
                     - "Count as funnel loss at F04 (SFMC Planned / Sent / Suppressed)"
+                derived_fields:
+                  LAST_COMPLETED_STAGE:
+                    logic: "Highest stage number where *_SENT = TRUE (UPPER(TRIM())='TRUE'). Scan from Stage 09 down to Stage 01."
+                  SUPPRESSION_STAGE:
+                    logic: "First stage after LAST_COMPLETED_STAGE where value is NULL and IS_SUPPRESSED = TRUE."
+                  JOURNEY_STATUS:
+                    logic: >
+                      IF IS_SUPPRESSED = TRUE → 'Suppressed'
+                      ELSE IF STAGE_09_FINAL_REMINDER_EMAIL_SENT = TRUE → 'Completed'
+                      ELSE → 'In Progress'
+                  STAGES_COMPLETED_COUNT:
+                    logic: "Count of all *_SENT columns where UPPER(TRIM())='TRUE'."
+                  NEXT_EXPECTED_STAGE:
+                    logic: "Next stage number after LAST_COMPLETED_STAGE, if JOURNEY_STATUS = 'In Progress'."
+                ai_behavior_rules:
+                  - "Do NOT treat NULL stage values after suppression as missing data."
+                  - "Treat NULL values after IS_SUPPRESSED = TRUE as intentional suppression cutoffs."
+                  - "Always compute LAST_COMPLETED_STAGE before answering stage-level questions."
+                  - "Always compute SUPPRESSION_STAGE when IS_SUPPRESSED = TRUE."
+                  - "Use stage sequence (01→09) to determine progression direction."
+                  - "Stages are strictly ordered — a later stage can only be TRUE if all prior stages were TRUE."
+                  - "Use business-friendly stage names in all AI responses (e.g. 'Stage 03 — Education Email 1')."
                 join_notes:
                   - "PROSPECT_ID = MASTER_PATIENT_ID = SUBSCRIBER_KEY (all three are the same FIP... value)"
                   - "To query suppressed prospects: WHERE UPPER(TRIM(SUPPRESSION_FLAG)) IN ('YES','Y','TRUE','1')"
+                  - "To test individual stage sent flags: UPPER(TRIM(col)) = 'TRUE' (values are VARCHAR 'True'/'False')"
 
       QA_FIPSAR_AUDIT:
         description: "Operational observability and data quality control layer"
@@ -939,61 +1065,99 @@ semantic_layer:
           - "suppression_risk_score"
 
   journey_definition:
-    description: "Canonical prospect journey map used in marts and AI semantics"
-    journeys:
-      - journey_code: "J01_Welcome"
-        journey_name: "Prospect Welcome Journey"
-        stages:
-          - stage_number: 1
-            stage_name: "Welcome Email"
-            email_names:
-              - "Prospect_Welcome_01_Welcome_Email"
-              - "Prospect_Welcome_01_Welcome_Email_Resend"
-          - stage_number: 2
-            stage_name: "Education Email"
-            email_names:
-              - "Prospect_Welcome_02_Education_Email"
-      - journey_code: "J02_Nurture"
-        journey_name: "Prospect Nurture Journey"
-        stages:
-          - stage_number: 3
-            stage_name: "Education Email 1"
-            email_names:
-              - "Prospect_Nurture_01_Education_Email_1"
-              - "Prospect_Nurture_01_Education_Email_1_Resend"
-              - "Prospect_Nurture_01_Education_Email_1 _Resend"
-          - stage_number: 4
-            stage_name: "Education Email 2"
-            email_names:
-              - "Prospect_Nurture_02_Education_Email_2"
-          - stage_number: 5
-            stage_name: "Prospect Story Email"
-            email_names:
-              - "Prospect_Nurture_03_Prospect_Story_Email"
-              - "Prospect_Nurture_03_Prospect_Story_Email_Resend"
-              - "Prospect_Nurture_03_Patient_Story_Email"
-      - journey_code: "J03_Conversion"
-        journey_name: "High Engagement Conversion"
-        stages:
-          - stage_number: 6
-            stage_name: "Conversion Email"
-            email_names:
-              - "Prospect_Conversion_01_Conversion_Email"
-          - stage_number: 7
-            stage_name: "Reminder Email"
-            email_names:
-              - "Prospect_Conversion_02_Reminder_Email"
-      - journey_code: "J04_ReEngagement"
-        journey_name: "Low Engagement Re-engagement"
-        stages:
-          - stage_number: 8
-            stage_name: "Re-engagement Email"
-            email_names:
-              - "Prospect_ReEngagement_01_ReEngagement_Email"
-          - stage_number: 9
-            stage_name: "Final Reminder Email"
-            email_names:
-              - "Prospect_ReEngagement_02_Final_Reminder_Email"
+    description: >
+      There is ONE journey: the Prospect Journey. It has 9 ordered stages grouped into 4 phases.
+      Phases are used for business reporting grouping ONLY — they do not represent separate journeys.
+      All AI outputs and business-facing labels must use "Prospect Journey" as the journey name.
+    journey_name: "Prospect Journey"
+    journey_count: 1
+    phases:
+      - phase_name: "Welcome Phase"
+        stages: [1, 2]
+      - phase_name: "Nurture Phase"
+        stages: [3, 4, 5]
+      - phase_name: "High Engagement Phase"
+        stages: [6, 7]
+      - phase_name: "Low Engagement Phase"
+        stages: [8, 9]
+    stage_sequence:
+      - stage_number: 1
+        semantic_alias: "STAGE_01_WELCOME_EMAIL"
+        physical_sent_col: "WELCOMEJOURNEY_WELCOMEEMAIL_SENT"
+        physical_date_col: "WELCOMEJOURNEY_WELCOMEEMAIL_SENT_DATE"
+        business_name: "Welcome Email"
+        phase: "Welcome Phase"
+        email_names:
+          - "Prospect_Welcome_01_Welcome_Email"
+          - "Prospect_Welcome_01_Welcome_Email_Resend"
+      - stage_number: 2
+        semantic_alias: "STAGE_02_EDUCATION_EMAIL"
+        physical_sent_col: "WELCOMEJOURNEY_EDUCATIONEMAIL_SENT"
+        physical_date_col: "WELCOMEJOURNEY_EDUCATIONEMAIL_SENT_DATE"
+        business_name: "Education Email"
+        phase: "Welcome Phase"
+        email_names:
+          - "Prospect_Welcome_02_Education_Email"
+      - stage_number: 3
+        semantic_alias: "STAGE_03_EDUCATION_EMAIL_1"
+        physical_sent_col: "NURTUREJOURNEY_EDUCATIONEMAIL1_SENT"
+        physical_date_col: "NURTUREJOURNEY_EDUCATIONEMAIL1_SENT_DATE"
+        business_name: "Education Email 1"
+        phase: "Nurture Phase"
+        email_names:
+          - "Prospect_Nurture_01_Education_Email_1"
+          - "Prospect_Nurture_01_Education_Email_1_Resend"
+          - "Prospect_Nurture_01_Education_Email_1 _Resend"
+      - stage_number: 4
+        semantic_alias: "STAGE_04_EDUCATION_EMAIL_2"
+        physical_sent_col: "NURTUREJOURNEY_EDUCATIONEMAIL2_SENT"
+        physical_date_col: "NURTUREJOURNEY_EDUCATIONEMAIL2_SENT_DATE"
+        business_name: "Education Email 2"
+        phase: "Nurture Phase"
+        email_names:
+          - "Prospect_Nurture_02_Education_Email_2"
+      - stage_number: 5
+        semantic_alias: "STAGE_05_PROSPECT_STORY_EMAIL"
+        physical_sent_col: "NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT"
+        physical_date_col: "NURTUREJOURNEY_PROSPECTSTORYEMAIL_SENT_DATE"
+        business_name: "Prospect Story Email"
+        phase: "Nurture Phase"
+        email_names:
+          - "Prospect_Nurture_03_Prospect_Story_Email"
+          - "Prospect_Nurture_03_Prospect_Story_Email_Resend"
+          - "Prospect_Nurture_03_Patient_Story_Email"
+      - stage_number: 6
+        semantic_alias: "STAGE_06_CONVERSION_EMAIL"
+        physical_sent_col: "HIGHENGAGEMENT_CONVERSIONEMAIL_SENT"
+        physical_date_col: "HIGHENGAGEMENT_CONVERSIONEMAIL_SENT_DATE"
+        business_name: "Conversion Email"
+        phase: "High Engagement Phase"
+        email_names:
+          - "Prospect_Conversion_01_Conversion_Email"
+      - stage_number: 7
+        semantic_alias: "STAGE_07_REMINDER_EMAIL"
+        physical_sent_col: "HIGHENGAGEMENT_REMINDEREMAIL_SENT"
+        physical_date_col: "HIGHENGAGEMENT_REMINDEREMAIL_SENT_DATE"
+        business_name: "Reminder Email"
+        phase: "High Engagement Phase"
+        email_names:
+          - "Prospect_Conversion_02_Reminder_Email"
+      - stage_number: 8
+        semantic_alias: "STAGE_08_REENGAGEMENT_EMAIL"
+        physical_sent_col: "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT"
+        physical_date_col: "LOWENGAGEMENT_REENGAGEMENTEMAIL_SENT_DATE"
+        business_name: "Re-engagement Email"
+        phase: "Low Engagement Phase"
+        email_names:
+          - "Prospect_ReEngagement_01_ReEngagement_Email"
+      - stage_number: 9
+        semantic_alias: "STAGE_09_FINAL_REMINDER_EMAIL"
+        physical_sent_col: "LOWENGAGEMENTFINALREMINDEREMAIL_SENT"
+        physical_date_col: "LOWENGAGEMENTFINALREMINDEREMAIL_SENT_DATE"
+        business_name: "Final Reminder Email"
+        phase: "Low Engagement Phase"
+        email_names:
+          - "Prospect_ReEngagement_02_Final_Reminder_Email"
     stage_intervals_days:
       description: >
         Fixed calendar intervals (in days) between consecutive journey stages.
@@ -1057,21 +1221,24 @@ semantic_layer:
       tool_to_use: "get_sfmc_stage_suppression(target_date, prospect_id) — handles all per-stage and per-prospect suppression questions"
 
     engagement_path_logic:
-      HIGH:
-        description: "Progressive or conversion-oriented path"
-        expected_stages:
-          - 1
-          - 2
-          - 3
-          - 4
-          - 5
-          - 6
-          - 7
-      LOW:
-        description: "Re-engagement / low-engagement handling path"
-        expected_stages:
-          - 8
-          - 9
+      description: >
+        All 9 stages belong to the single Prospect Journey. Phases group stages for business
+        reporting but are NOT separate journeys. Suppression can occur at any stage.
+      welcome_phase:
+        stages: [1, 2]
+        description: "Initial outreach — Welcome Email then Education Email"
+      nurture_phase:
+        stages: [3, 4, 5]
+        description: "Educational content deepening prospect engagement"
+      high_engagement_phase:
+        stages: [6, 7]
+        description: "Conversion-oriented outreach for engaged prospects"
+      low_engagement_phase:
+        stages: [8, 9]
+        description: "Re-engagement and final reminder for less-engaged prospects"
+      suppression_note: >
+        A prospect can be suppressed at any stage transition. After suppression, all remaining
+        stage columns will be NULL — this is expected behaviour, not missing data.
 
   event_semantics:
     lead_event:
@@ -1137,7 +1304,21 @@ semantic_layer:
       - name: "unsubscribe_rate"
         definition: "unsubscribe_count / delivered_count"
       - name: "journey_completion_rate"
-        definition: "completed_prospects / prospects_entered_journey"
+        definition: "COUNT of prospects where STAGE_09_FINAL_REMINDER_EMAIL_SENT = TRUE / total prospects in Prospect Journey"
+      - name: "stage_completion_rate"
+        definition: "For a given stage N: COUNT(stage_N_SENT = TRUE) / total_prospects_in_journey"
+      - name: "suppression_rate_by_stage"
+        definition: "COUNT of prospects suppressed at each stage / total prospects who entered that stage"
+      - name: "last_completed_stage"
+        definition: "Highest stage number (01–09) where *_SENT = TRUE for a given prospect. Derived from RAW_SFMC_PROSPECT_JOURNEY_DETAILS."
+      - name: "suppression_stage"
+        definition: "First stage after LAST_COMPLETED_STAGE where value is NULL and IS_SUPPRESSED = TRUE."
+      - name: "journey_status"
+        definition: "IF IS_SUPPRESSED=TRUE → 'Suppressed'; ELSE IF STAGE_09_FINAL_REMINDER_EMAIL_SENT=TRUE → 'Completed'; ELSE → 'In Progress'."
+      - name: "stages_completed_count"
+        definition: "Count of *_SENT columns where UPPER(TRIM())='TRUE' for a given prospect. Range 0–9."
+      - name: "next_expected_stage"
+        definition: "Next stage after LAST_COMPLETED_STAGE when JOURNEY_STATUS = 'In Progress'."
       - name: "data_quality_issue_rate"
         definition: "DQ issue rows / total rows in context"
       - name: "signal_trust_score"
@@ -1151,16 +1332,19 @@ semantic_layer:
       example_questions:
         - "How many leads became Prospects last week by channel?"
         - "What are the top rejection reasons for invalid leads?"
-        - "Which journey stage has the highest drop-off?"
-        - "How many sends were suppressed by channel or journey?"
+        - "Which stage of the Prospect Journey has the highest drop-off?"
+        - "How many prospects were suppressed and at which stage did suppression occur?"
+        - "How many prospects completed all 9 stages of the Prospect Journey?"
+        - "What is the stage completion rate for Stage 05 (Prospect Story Email)?"
     search:
       description: >
         Semantic retrieval over tables, business definitions, journey structure, rejection reasons,
         and Prospect engagement patterns.
       example_queries:
-        - "Find records related to low engagement re-engagement path"
+        - "Find records related to Stage 08 Re-engagement Email in the Prospect Journey"
         - "Show all data assets involved in invalid lead handling"
         - "Which tables define suppression and fatal errors?"
+        - "Which prospects were suppressed at Stage 03 — Education Email 1?"
     conversational_ai:
       description: >
         Natural language grounded interpretation of the pipeline, funnel, and metrics with
@@ -1176,8 +1360,9 @@ semantic_layer:
         and recommend actions.
       action_patterns:
         - "Investigate spike in NULL_EMAIL invalid leads"
-        - "Compare suppression trend across journeys"
-        - "Surface records and stages causing severe drop-off"
+        - "Compare suppression trend across Prospect Journey stages"
+        - "Surface which stage of the Prospect Journey is causing the most drop-off"
+        - "Identify prospects suppressed before completing the Welcome Phase (Stages 01–02)"
         - "Recommend next best send time or trust low-score review"
 
   similarity_search:
@@ -1244,10 +1429,23 @@ semantic_layer:
           - "NO_CONSENT"
           - "SUPPRESSED"
           - "FATAL_ERROR"
-          - "Welcome Journey"
-          - "Nurture Journey"
-          - "Conversion"
-          - "Re-engagement"
+          - "Prospect Journey"
+          - "Welcome Phase"
+          - "Nurture Phase"
+          - "High Engagement Phase"
+          - "Low Engagement Phase"
+          - "Stage 01 Welcome Email"
+          - "Stage 02 Education Email"
+          - "Stage 03 Education Email 1"
+          - "Stage 04 Education Email 2"
+          - "Stage 05 Prospect Story Email"
+          - "Stage 06 Conversion Email"
+          - "Stage 07 Reminder Email"
+          - "Stage 08 Re-engagement Email"
+          - "Stage 09 Final Reminder Email"
+          - "LAST_COMPLETED_STAGE"
+          - "SUPPRESSION_STAGE"
+          - "JOURNEY_STATUS"
         vector_fields:
           - "business descriptions"
           - "journey/stage names"
@@ -1327,7 +1525,7 @@ semantic_layer:
       - "Step 07 [Identity Bridge]: PHI_PROSPECT_MASTER -> QA_FIPSAR_PHI_HUB.PHI_CORE.PATIENT_IDENTITY_XREF (for audit/email lookup; NOTE: SFMC SUBSCRIBER_KEY joins directly to MASTER_PATIENT_ID)"
       - "Step 08 [Outbound to SFMC]: QA_FIPSAR_DW.GOLD.DIM_PROSPECT (ACTIVE records only) -> VW_SFMC_PROSPECT_OUTBOUND -> AWS S3 outbound -> Salesforce Marketing Cloud | Log: PIPELINE_RUN_LOG"
       - "Step 08a [SFMC Inbound Validation]: RAW_SFMC_PROSPECT_C.PROSPECT_ID = DIM_PROSPECT.MASTER_PATIENT_ID — verify all exported prospects loaded into SFMC"
-      - "Step 09 [SFMC Journey]: SFMC executes 4 Journeys / 9 Stages with fixed stage intervals; SUBSCRIBER_KEY in all SFMC outputs = MASTER_PATIENT_ID (FIP... format)"
+      - "Step 09 [SFMC Journey]: SFMC executes the Prospect Journey — 1 Journey / 9 Stages across 4 Phases (Welcome, Nurture, High Engagement, Low Engagement) with fixed stage intervals; SUBSCRIBER_KEY in all SFMC outputs = MASTER_PATIENT_ID (FIP... format)"
       - "Step 10 [SFMC Raw Events]: SFMC S3 -> QA_FIPSAR_SFMC_EVENTS.RAW_EVENTS.RAW_SFMC_SENT/OPENS/CLICKS/BOUNCES/UNSUBSCRIBES/SPAM (SUBSCRIBER_KEY = MASTER_PATIENT_ID) | Log: PIPELINE_RUN_LOG"
       - "Step 10a [SFMC Prospect Data]: SFMC S3 -> RAW_SFMC_PROSPECT_C (current snapshot), RAW_SFMC_PROSPECT_C_HISTORY (batch history), RAW_SFMC_PROSPECT_JOURNEY_DETAILS (wide per-stage flags) | Log: PIPELINE_RUN_LOG"
       - "Step 10b [Suppression Detection]: RAW_SFMC_PROSPECT_JOURNEY_DETAILS (SUPPRESSION_FLAG IN ('YES','Y','TRUE','1')) -> DQ_REJECTION_LOG (TABLE_NAME='FACT_SFMC_ENGAGEMENT', REJECTION_REASON='SUPPRESSED_PROSPECT') | Log: PIPELINE_RUN_LOG"

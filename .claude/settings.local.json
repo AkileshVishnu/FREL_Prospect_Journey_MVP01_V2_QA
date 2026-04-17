@@ -31,7 +31,8 @@
       "Bash(python -c \"import docx; print\\('python-docx OK'\\)\")",
       "Bash(pip install *)",
       "Bash(python -c \"import docx; print\\('OK'\\)\")",
-      "Bash(python generate_demo_doc.py)"
+      "Bash(python generate_demo_doc.py)",
+      "Bash(python -c \"import docx; print\\('python-docx ok'\\)\")"
     ]
   }
 }
